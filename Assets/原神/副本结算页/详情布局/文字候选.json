@@ -1,0 +1,378 @@
+{
+  "version": 1,
+  "logical_width": 410,
+  "level_text_top": 265,
+  "scope": "Conditional candidate geometry; native pixel confirmation required, not certified runtime settings.",
+  "layouts": {
+    "0": [
+      {
+        "role": "标题",
+        "textBox": {
+          "x": 24.0,
+          "y": 27.0,
+          "width": 168.0,
+          "height": 34.0
+        }
+      },
+      {
+        "role": "类型",
+        "textBox": {
+          "x": 24.0,
+          "y": 78.5,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "主名",
+        "textBox": {
+          "x": 24.0,
+          "y": 146.3333282470703,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "值",
+        "textBox": {
+          "x": 24.0,
+          "y": 167.3333282470703,
+          "width": 56.0,
+          "height": 44.0
+        }
+      },
+      {
+        "role": "等级",
+        "textBox": {
+          "x": 34.0,
+          "y": 265.0,
+          "width": 28.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "套装名",
+        "textBox": {
+          "x": 24.0,
+          "y": 296.0,
+          "width": 87.0,
+          "height": 24.0
+        }
+      }
+    ],
+    "1": [
+      {
+        "role": "标题",
+        "textBox": {
+          "x": 24.0,
+          "y": 27.0,
+          "width": 168.0,
+          "height": 34.0
+        }
+      },
+      {
+        "role": "类型",
+        "textBox": {
+          "x": 24.0,
+          "y": 78.5,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "主名",
+        "textBox": {
+          "x": 24.0,
+          "y": 146.3333282470703,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "值",
+        "textBox": {
+          "x": 24.0,
+          "y": 167.3333282470703,
+          "width": 56.0,
+          "height": 44.0
+        }
+      },
+      {
+        "role": "等级",
+        "textBox": {
+          "x": 34.0,
+          "y": 265.0,
+          "width": 28.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "套装名",
+        "textBox": {
+          "x": 24.0,
+          "y": 332.0,
+          "width": 87.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条0",
+        "textBox": {
+          "x": 24.0,
+          "y": 300.0,
+          "width": 145.0,
+          "height": 24.0
+        }
+      }
+    ],
+    "2": [
+      {
+        "role": "标题",
+        "textBox": {
+          "x": 24.0,
+          "y": 27.0,
+          "width": 168.0,
+          "height": 34.0
+        }
+      },
+      {
+        "role": "类型",
+        "textBox": {
+          "x": 24.0,
+          "y": 78.5,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "主名",
+        "textBox": {
+          "x": 24.0,
+          "y": 146.3333282470703,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "值",
+        "textBox": {
+          "x": 24.0,
+          "y": 167.3333282470703,
+          "width": 56.0,
+          "height": 44.0
+        }
+      },
+      {
+        "role": "等级",
+        "textBox": {
+          "x": 34.0,
+          "y": 265.0,
+          "width": 28.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "套装名",
+        "textBox": {
+          "x": 24.0,
+          "y": 364.0,
+          "width": 87.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条0",
+        "textBox": {
+          "x": 24.0,
+          "y": 300.0,
+          "width": 145.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条1",
+        "textBox": {
+          "x": 24.0,
+          "y": 332.0,
+          "width": 125.0,
+          "height": 24.0
+        }
+      }
+    ],
+    "3": [
+      {
+        "role": "标题",
+        "textBox": {
+          "x": 24.0,
+          "y": 27.0,
+          "width": 168.0,
+          "height": 34.0
+        }
+      },
+      {
+        "role": "类型",
+        "textBox": {
+          "x": 24.0,
+          "y": 78.5,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "主名",
+        "textBox": {
+          "x": 24.0,
+          "y": 146.3333282470703,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "值",
+        "textBox": {
+          "x": 24.0,
+          "y": 167.3333282470703,
+          "width": 56.0,
+          "height": 44.0
+        }
+      },
+      {
+        "role": "等级",
+        "textBox": {
+          "x": 34.0,
+          "y": 265.0,
+          "width": 28.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "套装名",
+        "textBox": {
+          "x": 24.0,
+          "y": 396.0,
+          "width": 87.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条0",
+        "textBox": {
+          "x": 24.0,
+          "y": 300.0,
+          "width": 145.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条1",
+        "textBox": {
+          "x": 24.0,
+          "y": 332.0,
+          "width": 125.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条2",
+        "textBox": {
+          "x": 24.0,
+          "y": 364.0,
+          "width": 95.0,
+          "height": 24.0
+        }
+      }
+    ],
+    "4": [
+      {
+        "role": "标题",
+        "textBox": {
+          "x": 24.0,
+          "y": 27.0,
+          "width": 168.0,
+          "height": 34.0
+        }
+      },
+      {
+        "role": "类型",
+        "textBox": {
+          "x": 24.0,
+          "y": 78.5,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "主名",
+        "textBox": {
+          "x": 24.0,
+          "y": 146.3333282470703,
+          "width": 54.0,
+          "height": 21.0
+        }
+      },
+      {
+        "role": "值",
+        "textBox": {
+          "x": 24.0,
+          "y": 167.3333282470703,
+          "width": 56.0,
+          "height": 44.0
+        }
+      },
+      {
+        "role": "等级",
+        "textBox": {
+          "x": 34.0,
+          "y": 265.0,
+          "width": 28.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "套装名",
+        "textBox": {
+          "x": 24.0,
+          "y": 428.0,
+          "width": 87.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条0",
+        "textBox": {
+          "x": 24.0,
+          "y": 300.0,
+          "width": 145.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条1",
+        "textBox": {
+          "x": 24.0,
+          "y": 332.0,
+          "width": 125.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条2",
+        "textBox": {
+          "x": 24.0,
+          "y": 364.0,
+          "width": 95.0,
+          "height": 24.0
+        }
+      },
+      {
+        "role": "副词条3",
+        "textBox": {
+          "x": 24.0,
+          "y": 396.0,
+          "width": 203.0,
+          "height": 24.0
+        }
+      }
+    ]
+  }
+}

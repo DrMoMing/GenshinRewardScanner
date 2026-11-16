@@ -1,0 +1,288 @@
+{
+  "app": {
+    "name": "原神副本扫描器",
+    "version": "界面演示"
+  },
+  "settings": {
+    "single_workers": 2,
+    "scan_stars": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "row_info": true,
+    "xlsx_target": "",
+    "xlsx_sheet": "获得物",
+    "live_excel": true,
+    "sound": true,
+    "overlay_visible": false,
+    "overlay_performance": true,
+    "overlay_opacity": 72,
+    "overlay_exclude": true,
+    "overlay_locked": false,
+    "overlay_auto_lock": true,
+    "auto_cleanup": false,
+    "cleanup_mode": "batches",
+    "keep_batches": 3,
+    "keep_days": 7
+  },
+  "runtime": {
+    "waiting": false,
+    "busy": false,
+    "status_text": "演示数据 · 可查看批次、错误、筛选和设置。",
+    "actual_workers": 2,
+    "models_loaded": 3,
+    "models_total": 3,
+    "shortcuts": {
+      "full": "Ctrl+Alt+S",
+      "single": "Ctrl+Alt+D",
+      "puzzle": "Ctrl+Alt+P",
+      "abort": "Ctrl+Alt+X",
+      "stop": "Ctrl+Alt+Q",
+      "overlay": "Ctrl+Alt+O"
+    },
+    "capture": {
+      "found": true,
+      "name": "原神 · 演示窗口",
+      "meta": "1920×1080",
+      "status": "演示"
+    },
+    "connection": {
+      "text": "演示工作簿.xlsx"
+    },
+    "logs": [
+      {
+        "text": "12:24:16  演示任务已结束，已写入23件。"
+      },
+      {
+        "text": "12:23:48  演示任务开始，正在逐张扫描。"
+      }
+    ]
+  },
+  "space": {
+    "path": "演示数据",
+    "used_bytes": 878706688,
+    "cleanable_bytes": 527433728,
+    "protected_bytes": 351272960,
+    "free_bytes": 21474836480,
+    "segments": [
+      {
+        "label": "截图批次",
+        "bytes": 548614963,
+        "color": "#1D7961"
+      },
+      {
+        "label": "诊断摘要",
+        "bytes": 137153741,
+        "color": "#4E7F99"
+      },
+      {
+        "label": "格式化 JSON",
+        "bytes": 31457280,
+        "color": "#C19343"
+      },
+      {
+        "label": "工作簿",
+        "bytes": 4194304,
+        "color": "#8E9B92"
+      },
+      {
+        "label": "学习成果",
+        "bytes": 157286400,
+        "color": "#7C719B"
+      }
+    ]
+  },
+  "batches": [
+    {
+      "name": "演示批次_20261111_090000",
+      "task": "整趟扫描",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 16777216,
+      "files": 12,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794358800000000000
+    },
+    {
+      "name": "演示批次_20261111_100000",
+      "task": "单卡识别",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 24117248,
+      "files": 17,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794355200000000000
+    },
+    {
+      "name": "演示批次_20261111_110000",
+      "task": "独立拼图",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 31457280,
+      "files": 22,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794351600000000000
+    },
+    {
+      "name": "演示批次_20261110_090000",
+      "task": "整趟扫描",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 38797312,
+      "files": 27,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794348000000000000
+    },
+    {
+      "name": "演示批次_20261110_100000",
+      "task": "单卡识别",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 46137344,
+      "files": 32,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794344400000000000
+    },
+    {
+      "name": "演示批次_20261110_110000",
+      "task": "独立拼图",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 53477376,
+      "files": 37,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794340800000000000
+    },
+    {
+      "name": "演示批次_20261109_090000",
+      "task": "整趟扫描",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 60817408,
+      "files": 42,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794337200000000000
+    },
+    {
+      "name": "演示批次_20261109_100000",
+      "task": "单卡识别",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 68157440,
+      "files": 47,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794333600000000000
+    },
+    {
+      "name": "演示批次_20261109_110000",
+      "task": "独立拼图",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 75497472,
+      "files": 52,
+      "protected": true,
+      "reclaimable": false,
+      "modified_ns": 1794330000000000000
+    },
+    {
+      "name": "演示批次_20261108_090000",
+      "task": "整趟扫描",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 82837504,
+      "files": 57,
+      "protected": true,
+      "reclaimable": false,
+      "modified_ns": 1794326400000000000
+    },
+    {
+      "name": "演示批次_20261108_100000",
+      "task": "单卡识别",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 90177536,
+      "files": 62,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794322800000000000
+    },
+    {
+      "name": "演示批次_20261108_110000",
+      "task": "独立拼图",
+      "stars": "5★ / 4★ / 3★",
+      "bytes": 97517568,
+      "files": 67,
+      "protected": false,
+      "reclaimable": true,
+      "modified_ns": 1794319200000000000
+    }
+  ],
+  "issues": [
+    {
+      "id": "demo-failure-00",
+      "task": "整趟扫描",
+      "status": "failed",
+      "message": "演示错误：当前画面未找到获得横排。",
+      "batch_name": "演示批次_20261111_090000",
+      "occurred_at": "2026-11-11 09:24:16"
+    },
+    {
+      "id": "demo-failure-01",
+      "task": "启动准备",
+      "status": "failed",
+      "message": "演示错误：指定工作簿被占用。",
+      "batch_name": "演示批次_20261111_100000",
+      "occurred_at": "2026-11-11 10:24:16"
+    },
+    {
+      "id": "demo-failure-02",
+      "task": "单卡识别",
+      "status": "failed",
+      "message": "演示错误：当前画面没有圣遗物详情。",
+      "batch_name": "演示批次_20261111_110000",
+      "occurred_at": "2026-11-11 11:24:16"
+    },
+    {
+      "id": "demo-failure-03",
+      "task": "独立拼图",
+      "status": "failed",
+      "message": "演示错误：横排拖动后定位未能确认。",
+      "batch_name": "演示批次_20261110_090000",
+      "occurred_at": "2026-11-11 12:24:16"
+    }
+  ],
+  "performance": {
+    "cpu": {
+      "app_text": "1.8%",
+      "sys_text": "15.6%"
+    },
+    "gpu": {
+      "app_text": "0.4%",
+      "sys_text": "18.2%"
+    },
+    "memory": {
+      "app_text": "0.8%",
+      "sys_text": "48.2%"
+    }
+  },
+  "documents": {
+    "version": "界面演示",
+    "files": [
+      {
+        "name": "MaaFramework-LGPLv3.md",
+        "folder": "."
+      },
+      {
+        "name": "PaddleOCR-Apache-2.0.txt",
+        "folder": "."
+      },
+      {
+        "name": "Python-LICENSE.txt",
+        "folder": "."
+      },
+      {
+        "name": "numpy/LICENSE.txt",
+        "folder": "."
+      }
+    ]
+  }
+}

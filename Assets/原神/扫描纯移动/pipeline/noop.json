@@ -1,0 +1,6 @@
+{
+  "ScannerMoveResource": {
+    "recognition": "DirectHit",
+    "action": "DoNothing"
+  }
+}

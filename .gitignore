@@ -1,0 +1,12 @@
+.venv/
+.build/
+dist/
+__pycache__/
+*.pyc
+产出/
+缓存/
+*.log
+*.xlsx
+scanner_settings.json
+模板实验设置.json
+*.dmp

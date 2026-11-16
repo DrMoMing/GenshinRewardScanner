@@ -1,0 +1,5 @@
+OCR模型来源：MaaMCP 2026-09-12下载日志记录的
+https://download.maafw.xyz/MaaCommonAssets/OCR/ppocr_v5/ppocr_v5-zh_cn.zip
+未改模型。MaaCommonAssets 项目MIT，底层PaddleOCR项目Apache-2.0，两份许可随包。
+https://github.com/MaaXYZ/MaaCommonAssets/tree/main/OCR
+https://github.com/PaddlePaddle/PaddleOCR

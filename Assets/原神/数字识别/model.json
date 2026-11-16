@@ -1,0 +1,26 @@
+{
+  "version": "tiny-v2",
+  "sha256": "8b74e911d79087fe1671fdc6f7f8c594848f742dfc7a63449f655c1e3abe6204",
+  "vocab": [
+    "",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "+",
+    ".",
+    "%",
+    "（待激活）"
+  ],
+  "confidence_min": 0.99,
+  "params": 47482,
+  "source": "TTF-only synthetic training; fixed pending suffix token",
+  "inference": "CPU, float32, 1 thread, no spin",
+  "supported_level": "+0; original OCR otherwise"
+}

@@ -1,0 +1,19 @@
+MaaFramework v5.13.0 / DomainScanner capture patch ds1
+
+build.json记录原始提交、MaaUtils提交、官方依赖摘要和本DLL哈希。
+corresponding-source.zip提供本次修改后的对应源码（含MaaUtils，不含预编译依赖）。
+原有版权与LGPL许可证随源码及发行资料保留。
+
+行为：FramePool无新帧超时后关闭会话并失败，不返回旧图；原2秒期限不变。
+新增可选原生观察回调，报告初始化、等待、帧时间戳、读回、结束、超时及帧到达事件。
+帧到达只代表生产端通知，不作为消费端工作进展。静态相同像素不会被拒绝。
+生产DLL不含DomainScannerSetCaptureFault导出，故障钩子只存在独立测试构建。
+
+构建：解压对应源码，按docs/zh_cn/4.1-构建指南.md补齐官方MaaDeps v2.12.6。
+Windows x64 / VS2022 / Release，CMake指定MAADEPS_TRIPLET=maa-x64-windows，
+MAA_HASH_VERSION=v5.13.0-ds1，DOMAIN_CAPTURE_TEST_HOOKS=OFF。
+构建MaaWin32ControlUnit目标，将DLL放回本目录，然后重建应用。
+开发版参考：debug/rc49_native下的独立源码、构建日志及受控故障验证。
+
+单卡截图在独立进程中执行；父进程看门狗可终止该输入无关进程。
+整趟页面进程沿用原动作边界与松手逻辑；本版没有增加强杀页面/输入进程的行为。

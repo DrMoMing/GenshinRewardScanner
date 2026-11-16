@@ -1,0 +1,11 @@
+{
+  "kind": "native timestamp observer bridge",
+  "sha256": "d0f8390b079515389436e595f9f3209e1c667e6e6b90822cc9e88002c9f0e444",
+  "maa_capture_sha256": "68f8f4dde60fcfb5564556a2e148ed8c82880063e0a14f5818a56129aaaa4107",
+  "rc59_exe_sha256": "53b5187ed5cefbe0ebd73e29e32ace9680fbe754400835dba3dddc63723c6f3b",
+  "records": 128,
+  "abi": 1,
+  "compiler": "MSVC x64 /O2 /MT",
+  "captures_images": false,
+  "sends_input": false
+}

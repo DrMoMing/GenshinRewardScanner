@@ -1,0 +1,15 @@
+{
+  "runtime_sha256": "5e856d0e072e8667c62e824e47d61af4dce1cc4b2eb3c2446687f8cd63fe076f",
+  "source_archive": "rc77-input-source.zip",
+  "original_bytes": true,
+  "files": {
+    "LICENSES/MaaCommonAssets-MIT.txt": "2f8ab70ffd1bd53863a27835be02757a657de693e2a2aef9111dbbfa2c5737f0",
+    "LICENSES/MaaFramework-LGPLv3.md": "446e755fae55ff034bbb21be44670b5f116c2b2667947e7036f2bfe6632539a8",
+    "LICENSES/OCR来源.txt": "7ee80dc8b080f970fab47f4b4f2484caa10f77edce5b41292b57c318c7ae8ee1",
+    "LICENSES/PaddleOCR-Apache-2.0.txt": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e",
+    "LICENSES/Python-LICENSE.txt": "62bec384df47b0328307db41455ff6ea2559e5546b394ac69148561b21703120",
+    "native/rc77-input-source.zip": "9078d9d3b13540dc08cf85a7f6c5d8ba2a15507bc0d26b58f815ac08dc79d653",
+    "native/build.json": "26c62403014835774ee5568096a1d37ded184c43103182318fd2d9305d4ca222",
+    "native/MaaWin32ControlUnit.dll": "5e856d0e072e8667c62e824e47d61af4dce1cc4b2eb3c2446687f8cd63fe076f"
+  }
+}
