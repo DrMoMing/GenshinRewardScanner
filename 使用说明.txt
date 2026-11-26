@@ -1,10 +1,10 @@
-﻿原神副本扫描器 0.3.0-preview.14
+﻿原神副本扫描器 0.3.0-preview.15
 
 
 
 安装与启动
 
-双击 DomainScanner_Setup_0.3.0-preview.14.exe，先确认 Windows UAC，再选择安装位置。
+双击 DomainScanner_Setup_0.3.0-preview.15.exe，先确认 Windows UAC，再选择安装位置。
 
 程序会建立独立的 DomainScanner 文件夹。启动 DomainScanner.exe 时确认管理员权限。
 

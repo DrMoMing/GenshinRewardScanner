@@ -10,3 +10,4 @@ __pycache__/
 scanner_settings.json
 模板实验设置.json
 *.dmp
+/docs/主页日志文案定位.md

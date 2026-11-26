@@ -11,32 +11,32 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
 
   <DataTemplate x:Key="SetupDiagram">
     <Viewbox Stretch="Uniform">
-      <Canvas Width="760" Height="156">
+      <Canvas Width="760" Height="164">
         <TextBlock Canvas.Left="20" Canvas.Top="10" Text="01" FontFamily="Consolas" FontSize="9" FontWeight="Bold" Foreground="#126b56"/>
         <TextBlock Canvas.Left="40" Canvas.Top="8" Text="请求路数" FontSize="13.5" FontWeight="SemiBold" Foreground="#3e4d46"/>
         <Border Canvas.Left="20" Canvas.Top="34" Width="166" Height="64" Background="#ffffff" BorderBrush="#d2ddd4" BorderThickness="1" CornerRadius="8">
           <StackPanel Margin="10,8,8,6">
-            <TextBlock Text="扫描设置 · 顶部" FontSize="10.5" Foreground="#9aa69f"/>
+            <TextBlock Text="扫描设置 · 顶部" FontSize="10.5" Foreground="#43515D"/>
             <Border Width="94" Height="25" Background="#f2f6f2" BorderBrush="#d6e0d8" BorderThickness="1" CornerRadius="6" HorizontalAlignment="Left" Margin="0,4,0,0">
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="22"/><ColumnDefinition Width="24"/><ColumnDefinition Width="22"/></Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="−" FontSize="13" Foreground="#7e8f85" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="0" Text="−" FontSize="13" Foreground="#43515D" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 <TextBlock Grid.Column="1" Text="3" FontSize="11.5" FontWeight="SemiBold" Foreground="#17231e" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="2" Text="+" FontSize="13" Foreground="#7e8f85" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="3" Text="路" FontSize="10.5" Foreground="#9aa69f" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="2" Text="+" FontSize="13" Foreground="#43515D" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="3" Text="路" FontSize="10.5" Foreground="#43515D" VerticalAlignment="Center"/>
               </Grid>
             </Border>
           </StackPanel>
         </Border>
-        <TextBlock Canvas.Left="20" Canvas.Top="112" Text="在扫描设置顶部选择 1–4 路" FontSize="11.5" Foreground="#738079"/>
-        <TextBlock Canvas.Left="20" Canvas.Top="130" Text="实际路数在启动后显示" FontSize="11.5" Foreground="#738079"/>
+        <TextBlock Canvas.Left="20" Canvas.Top="112" Text="在扫描设置顶部选择 1–4 路" FontSize="11.5" Foreground="#43515D"/>
+        <TextBlock Canvas.Left="20" Canvas.Top="130" Text="实际路数在启动后显示" FontSize="11.5" Foreground="#43515D"/>
 
         <Line X1="190" Y1="66" X2="205" Y2="66" Stroke="#a9b9ae" StrokeThickness="1.6"/>
         <Polygon Points="205,62 212,66 205,70" Fill="#a9b9ae"/>
 
         <TextBlock Canvas.Left="212" Canvas.Top="10" Text="02" FontFamily="Consolas" FontSize="9" FontWeight="Bold" Foreground="#126b56"/>
         <TextBlock Canvas.Left="232" Canvas.Top="8" Text="工作簿" FontSize="13.5" FontWeight="SemiBold" Foreground="#3e4d46"/>
-        <Border Canvas.Left="212" Canvas.Top="34" Width="166" Height="64" Background="#ffffff" BorderBrush="#d2ddd4" BorderThickness="1" CornerRadius="8">
+        <Border Canvas.Left="212" Canvas.Top="34" Width="166" Height="74" Background="#ffffff" BorderBrush="#d2ddd4" BorderThickness="1" CornerRadius="8">
           <Grid Margin="10,8,8,6">
             <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Border Grid.Column="0" Width="24" Height="28" Background="#f1f6f2" BorderBrush="#a8bdaf" BorderThickness="1" CornerRadius="3" VerticalAlignment="Top">
@@ -48,13 +48,13 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
             </Border>
             <StackPanel Grid.Column="1" Margin="8,0,0,0">
               <TextBlock Text="自动新建" FontSize="10.5" Foreground="#3e4d46"/>
-              <TextBlock Text="或指定已有文件" FontSize="10.5" Foreground="#9aa69f" Margin="0,2,0,0"/>
-              <TextBlock Text="启动前核对输出位置" FontSize="10.5" Foreground="#9aa69f" Margin="0,4,0,0"/>
+              <TextBlock Text="或指定已有文件" FontSize="10.5" Foreground="#43515D" Margin="0,2,0,0"/>
+              <TextBlock Text="启动前核对输出位置" FontSize="10.5" Foreground="#43515D" Margin="0,4,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
-        <TextBlock Canvas.Left="212" Canvas.Top="112" Text="自动新建或指定已有工作簿" FontSize="11.5" Foreground="#738079"/>
-        <TextBlock Canvas.Left="212" Canvas.Top="130" Text="启动准备时检查可写性" FontSize="11.5" Foreground="#738079"/>
+        <TextBlock Canvas.Left="212" Canvas.Top="112" Text="自动新建或指定已有工作簿" FontSize="11.5" Foreground="#43515D"/>
+        <TextBlock Canvas.Left="212" Canvas.Top="130" Text="启动准备时检查可写性" FontSize="11.5" Foreground="#43515D"/>
 
         <Line X1="382" Y1="66" X2="397" Y2="66" Stroke="#a9b9ae" StrokeThickness="1.6"/>
         <Polygon Points="397,62 404,66 397,70" Fill="#a9b9ae"/>
@@ -66,11 +66,11 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
             <Border Width="104" Height="23" Background="#126b56" CornerRadius="5" HorizontalAlignment="Left">
               <TextBlock Text="启动准备" Foreground="#ffffff" FontSize="10.5" HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
-            <TextBlock Text="连接 · 检查 · 预热" FontSize="10.5" Foreground="#9aa69f" Margin="0,4,0,0"/>
+            <TextBlock Text="连接 · 检查 · 预热" FontSize="10.5" Foreground="#43515D" Margin="0,4,0,0"/>
           </StackPanel>
         </Border>
-        <TextBlock Canvas.Left="404" Canvas.Top="112" Text="核对工作簿、内存和模型" FontSize="11.5" Foreground="#738079"/>
-        <TextBlock Canvas.Left="404" Canvas.Top="130" Text="完成后进入等待快捷键" FontSize="11.5" Foreground="#738079"/>
+        <TextBlock Canvas.Left="404" Canvas.Top="112" Text="核对工作簿、内存和模型" FontSize="11.5" Foreground="#43515D"/>
+        <TextBlock Canvas.Left="404" Canvas.Top="130" Text="完成后进入等待快捷键" FontSize="11.5" Foreground="#43515D"/>
 
         <Line X1="574" Y1="66" X2="589" Y2="66" Stroke="#a9b9ae" StrokeThickness="1.6"/>
         <Polygon Points="589,62 596,66 589,70" Fill="#a9b9ae"/>
@@ -80,9 +80,9 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
         <Rectangle Canvas.Left="596" Canvas.Top="34" Width="144" Height="64" RadiusX="8" RadiusY="8" Fill="#f1f8f4" Stroke="#9cc4b0" StrokeThickness="1" StrokeDashArray="4,3"/>
         <Ellipse Canvas.Left="607" Canvas.Top="51" Width="6" Height="6" Fill="#2d7e61"/>
         <TextBlock Canvas.Left="620" Canvas.Top="48" Text="等待快捷键" FontSize="10.5" Foreground="#3e4d46"/>
-        <TextBlock Canvas.Left="610" Canvas.Top="75" Text="快捷键监听已就绪" FontSize="10.5" Foreground="#9aa69f"/>
-        <TextBlock Canvas.Left="596" Canvas.Top="112" Text="看到此状态后切回游戏" FontSize="11.5" Foreground="#738079"/>
-        <TextBlock Canvas.Left="596" Canvas.Top="130" Text="任务由游戏快捷键触发" FontSize="11.5" Foreground="#738079"/>
+        <TextBlock Canvas.Left="610" Canvas.Top="75" Text="快捷键监听已就绪" FontSize="10.5" Foreground="#43515D"/>
+        <TextBlock Canvas.Left="596" Canvas.Top="112" Text="看到此状态后切回游戏" FontSize="11.5" Foreground="#43515D"/>
+        <TextBlock Canvas.Left="596" Canvas.Top="130" Width="153" TextWrapping="Wrap" Text="任务由「设置」中配置的快捷键触发" FontSize="11.5" Foreground="#43515D"/>
       </Canvas>
     </Viewbox>
   </DataTemplate>

@@ -1,6 +1,3 @@
-# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# AI-generated project code: written and modified with OpenAI Codex.
 """Desktop presentation adapter over the existing scanner action owner."""
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -241,13 +238,13 @@ class DesktopController:
         if any(linked(path) for path in (self.output,folder.parent,folder)):raise ValueError('批次目录不能是链接')
         os.startfile(folder)
 
-    def convert_batches(self,names,destination):
-        self._save_batches(names,destination,as_json=False)
+    def convert_batches(self,names,destination,completion=None):
+        self._save_batches(names,destination,as_json=False,completion=completion)
 
-    def export_batch_json(self,names,destination):
-        self._save_batches(names,destination,as_json=True)
+    def export_batch_json(self,names,destination,completion=None):
+        self._save_batches(names,destination,as_json=True,completion=completion)
 
-    def _save_batches(self,names,destination,as_json):
+    def _save_batches(self,names,destination,as_json,completion=None):
         if not self.cleanup_safe() or self.io_busy:raise ValueError('请停止监听并等待当前任务完成后导出批次产物')
         names=tuple(names)
         if not names or len(set(names))!=len(names) or any(name not in getattr(self,'convertible_batches',set()) for name in names):
@@ -297,9 +294,13 @@ class DesktopController:
                     completed.append(target)
             return completed
         def done(paths):
+            if completion:completion(True)
             self.context['status'].set('已保存 %d 个批次：%s'%(len(paths),'；'.join(map(str,paths))))
             self.refresh_space(manual=False)
-        self.run_io(convert,done)
+        def failed(error):
+            if completion:completion(False,error)
+        if not self.run_io(convert,done,on_error=failed):
+            raise ValueError('文件管理正在处理，请稍后重试')
 
     def convert_json(self,source,output):
         if self.context['busy'][0] or self.context['waiting'][0] or self.io_busy:
@@ -391,7 +392,7 @@ class DesktopController:
         except (OSError, ValueError) as error:
             c['status'].set('设置未保存：' + str(error))
 
-    def run_io(self, function, callback=None, pause_learning=False):
+    def run_io(self, function, callback=None, pause_learning=False, on_error=None):
         if self.io_busy:
             return False
         self.io_busy = True
@@ -400,7 +401,7 @@ class DesktopController:
             try:
                 result = function()
             except Exception as error:
-                self.results.put((None, str(error), callback))
+                self.results.put((None, str(error) or type(error).__name__, on_error))
             else:
                 self.results.put((result, '', callback))
         self.jobs.submit(work)
@@ -652,6 +653,7 @@ class DesktopController:
             self.learning_blocked=False
             if error:
                 c['status'].set('文件管理失败：' + error)
+                if callback:callback(error)
             elif callback:
                 callback(result)
         now = time.monotonic()

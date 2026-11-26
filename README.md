@@ -6,6 +6,23 @@
 
 本项目原创程序代码由 AI 编写、修改和调试，主要使用 OpenAI Codex；界面布局曾使用 DeepSeek Harness 辅助。DrMoMing 负责提出需求、实际测试和项目决策，未参与程序代码编写。第三方代码、模型和素材仍归其各自作者，不属于本项目 AI 制作声明的范围。
 
+## 下载方法
+
+点击 [此处](https://github.com/DrMoMing/GenshinRewardScanner/releases) ，在最新版本的Assets中，下载exe文件即可。
+
+## 功能界面展示
+
+<img width="1375" height="1000" alt="image" src="https://github.com/user-attachments/assets/008ff304-4573-4235-8b92-348443b9ec81" />
+
+<img width="1375" height="1000" alt="image" src="https://github.com/user-attachments/assets/0ee74848-bc54-4f55-920d-325320981c82" />
+
+<img width="1375" height="1000" alt="image" src="https://github.com/user-attachments/assets/90d77cc6-6c46-49cd-a9ea-189ccdef8c91" />
+
+悬浮窗展示：
+
+<img width="1375" height="1000" alt="image" src="https://github.com/user-attachments/assets/e588ca40-887a-4b07-a448-cecf1cf9ab9b" />
+
+
 ## 项目与许可
 
 本项目为 **源码可见 / source-available、非商业许可软件**，不以“开源软件”自称。

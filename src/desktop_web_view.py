@@ -1,6 +1,3 @@
-# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# AI-generated project code: written and modified with OpenAI Codex.
 """Desktop presentation transport. Scanner actions remain on the Tk owner."""
 import json
 import os
@@ -16,6 +13,8 @@ import tkinter as tk
 import scanner_audio
 from log_view import error_summary
 from user_controls import format_shortcut, SHORTCUT_WARNING
+
+DEFERRED_ACTION = object()
 
 
 class DesktopView:
@@ -230,6 +229,8 @@ class DesktopView:
             self.send_result(message,False,error_summary(str(error)))
             raise
         else:
+            if result is DEFERRED_ACTION:
+                return
             if result is None:
                 self.send_result(message,True)
             else:
@@ -306,7 +307,10 @@ class DesktopView:
                     if name == 'open_batch' and set(args)=={'name','record'} and isinstance(args['name'],str) and type(args['record']) is bool:
                         return self.actions[name](args['name'],args['record'])
                     if name in ('convert_batches','export_batch_json') and set(args)=={'names','destination'} and isinstance(args['destination'],str) and isinstance(args['names'],list) and all(isinstance(item,str) for item in args['names']):
-                        return self.actions[name](args['names'],args['destination'])
+                        def completion(ok,error=''):
+                            self.send_result(message,ok,error_summary(error) if error else '')
+                        self.actions[name](args['names'],args['destination'],completion=completion)
+                        return DEFERRED_ACTION
                     if name == 'export_error' and set(args)=={'id','output'}:
                         return self.actions[name](args['id'],destination=args['output'])
                     argument = {'preview_sound':'kind','cleanup_batches':'names','export_error':'id'}.get(name)
