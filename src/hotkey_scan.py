@@ -126,6 +126,8 @@ def keep_copy(t0,folder=None,source=None):
     dst = os.path.join(folder, '副本产物_%s_%d.json' % (time.strftime('%Y%m%d_%H%M%S'),time.time_ns()))
     with io.open(source, encoding='utf-8') as f:      # 读一遍确认是完整 JSON（半个文件说明写崩了）
         d = json.load(f)
+    if os.path.normcase(os.path.abspath(os.path.dirname(source))) == os.path.normcase(os.path.abspath(folder)) and os.path.normcase(os.path.abspath(source)) != os.path.normcase(os.path.abspath(EXPORT)):
+        return source
     with io.open(dst, 'w', encoding='utf-8') as f:
         json.dump(d, f, ensure_ascii=False, indent=1)
     return dst
@@ -154,7 +156,7 @@ def trigger(check, quiet=False, single=False,montage=False):
     t0 = time.time()
     rc, _n = run_module('montage' if montage else 'single' if single else 'check' if check else 'read', check=check)
     if check:
-        log('本次为只读检查，未操作鼠标')
+        log('本次为只读检查')
         return rc
     dst = keep_copy(t0) if rc == 0 else None
     if dst is None:
@@ -210,7 +212,7 @@ def selftest(scan_key, quit_key):
     if not ok:
         for i in (ID_SCAN, ID_QUIT):
             u.UnregisterHotKey(None, i)
-        log('自我检查没通过（没扫任何东西、没动鼠标）')
+        log('快捷键自检未通过')
         return 1
     log('投递测试退出热键消息，检查消息回路')
     u.PostThreadMessageW(k32.GetCurrentThreadId(), WM_HOTKEY, ID_QUIT, 0)
@@ -228,7 +230,7 @@ def selftest(scan_key, quit_key):
         u.UnregisterHotKey(None, i)          # 验完就注销，别占着
     log('   回路%s（%s）' % ('已收到测试消息' if got else '未收到测试消息',
                             '已注销两个热键' if got else '热键已注册但消息未读到，消息回路异常'))
-    log('自我检查%s（没扫任何东西、没动鼠标）' % ('通过' if got else '没通过'))
+    log('快捷键自检%s' % ('通过' if got else '没通过'))
     return 0 if got else 1
 
 
@@ -243,7 +245,7 @@ def enter_loop(a):
         try:
             s = input('› 回车=扫一次 ／ q=退出 ：').strip().lower()
         except EOFError:
-            log('（输入结束了）')
+            log('输入已结束')
             return 0
         if s == 'q':
             log('已退出。')
@@ -273,7 +275,7 @@ def main():
     log('=' * 72)
     log('副本产物 · 热键扫描（手动版）｜ 本进程管理员：%s' % ('是' if is_admin() else '否'))
     log('  模块：%s' % os.path.relpath(RUN_PY, ROOT))
-    log('  产物目录：%s（每次按下留一份带时间戳的副本）' % os.path.relpath(OUT_DIR, ROOT))
+    log('  产物目录：%s' % os.path.relpath(OUT_DIR, ROOT))
     log('  模式：%s' % ('只读检查（不动鼠标）' if a.cmd == 'check' else '真扫（按住拖动 + 逐张点开，占鼠标约 1 分钟）'))
     if a.selftest:
         return selftest(a.hotkey, a.quit_hotkey)

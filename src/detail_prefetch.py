@@ -1,6 +1,9 @@
 # Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # AI-generated project code: written and modified with OpenAI Codex.
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """One optional CPU image-preparation lane, never another OCR engine.
 
 At most the next frame of the current pair is prepared. Low memory or an

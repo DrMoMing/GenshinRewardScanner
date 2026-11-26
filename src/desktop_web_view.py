@@ -13,6 +13,9 @@ import threading
 import time
 import traceback
 import tkinter as tk
+import scanner_audio
+from log_view import error_summary
+from user_controls import format_shortcut, SHORTCUT_WARNING
 
 
 class DesktopView:
@@ -122,15 +125,20 @@ class DesktopView:
         shortcuts = {}
         for name, label in (('full','整趟'),('single','单卡'),('puzzle','拼图'),('abort','中止任务'),('stop','停止监听'),('overlay','浮窗锁定')):
             match = re.search(label + r'\s+([^　（]+)', values['keys'])
-            shortcuts[name] = '+'.join(part.capitalize() for part in match[1].strip().split('+')) if match else ''
+            shortcuts[name] = format_shortcut(match[1].strip()) if match else ''
         action = self.context.get('active_action', [None])[0]
-        runtime = dict(self.runtime, status_text=values['status'], shortcuts=shortcuts,
+        status_text = error_summary(values['status'])
+        runtime = dict(self.runtime, status_text=status_text, shortcuts=shortcuts,
+            sound_sources=scanner_audio.active_sources(),
             single_status=values['single_status'],
             task=dict(mode={'scan':'full','montage':'puzzle','single':'single'}.get(action,'none')),
             capture=dict(text=values['capture_target']), connection=dict(text=values['connection']),
             progress=dict(visible=(self.bindings['progress_widget'].visible if hasattr(self.bindings['progress_widget'],'visible') else bool(self.bindings['progress_widget'].winfo_manager())),
-                          label=values['status'], indeterminate=True),
+                          label=status_text, indeterminate=True),
             logs=[dict(text=line) for line in reversed((self.bindings['log_widget'].snapshot() if hasattr(self.bindings['log_widget'],'snapshot') else self.bindings['log_widget'].get('end-80l', 'end-1c')).splitlines())])
+        if action in ('scan','montage'):
+            runtime['state']='running'
+            runtime['single_remaining']=getattr(self.context.get('single_queue'),'pending',0)
         overlay = self.context.get('overlay')
         performance = {}
         for name, value in getattr(overlay,'last_performance',{}).items():
@@ -144,10 +152,18 @@ class DesktopView:
         capture = getattr(service,'capture_target_state',{})
         found = bool(capture.get('available'))
         runtime['capture'].update(found=found,
+            resolution_warning=capture.get('resolution_warning',''),
             name=values['capture_target'].removeprefix('当前捕获窗口：').split('｜')[0] if found else '未发现原神窗口',
             status=('已连接' if capture.get('connected') else '已找到') if found else '未连接')
         if service is not None:
-            runtime['models_loaded'] = self.runtime['actual_workers'] + int(bool(getattr(service,'page_model_ready',False)))
+            workers=getattr(service,'single_pool_workers',())
+            page=getattr(service,'page_worker',None)
+            runtime['models_loaded'] = sum(w is not page for w in workers) + int(bool(getattr(service,'page_model_ready',False)))
+        failures=dict(self.context.get('shortcut_failures',{}))
+        overlay_warning=self.context.get('overlay_shortcut_warning',[''])[0]
+        if overlay_warning:failures['overlay_hotkey']=overlay_warning
+        runtime['shortcut_failures']=failures
+        runtime['shortcut_warning']=SHORTCUT_WARNING if failures else ''
         if overlay:
             state = overlay.model.snapshot()
             loaded = re.fullmatch(r'(\d+)/(\d+)',state.get('loaded',''))
@@ -185,10 +201,12 @@ class DesktopView:
             raise ValueError('请在当前任务结束后修改此设置')
         if name in ('overlay_locked','overlay_auto_lock') and busy:
             raise ValueError('请在任务结束后调整浮窗锁定')
-        boolean = ('live', 'row_info', 'sound', 'overlay_visible', 'overlay_performance', 'overlay_exclude', 'auto_enabled', 'overlay_locked', 'overlay_auto_lock')
+        boolean = ('live', 'row_info', 'sound', 'overlay_visible', 'overlay_performance', 'overlay_exclude', 'auto_enabled', 'overlay_locked', 'overlay_auto_lock', 'auto_images', 'auto_results', 'auto_diagnostics')
         text = ('target', 'sheet', 'keep_batches', 'keep_days', 'auto_mode')
         if name in boolean and type(value) is bool:
             self.bindings[name].set(value)
+            if name == 'sound' and value:
+                scanner_audio.prepare()
             if name in ('overlay_locked','overlay_auto_lock') and 'apply_overlay_controls' in self.actions:
                 self.actions['apply_overlay_controls']()
         elif name in text and isinstance(value, str) and len(value) <= 4096:
@@ -209,7 +227,7 @@ class DesktopView:
         try:
             result=self.dispatch(message)
         except Exception as error:
-            self.send_result(message,False,str(error))
+            self.send_result(message,False,error_summary(str(error)))
             raise
         else:
             if result is None:
@@ -285,6 +303,10 @@ class DesktopView:
                         return self.actions[name](args['relative'])
                     if name == 'convert_json' and set(args)=={'source','output'}:
                         return self.actions[name](args['source'],args['output'])
+                    if name == 'open_batch' and set(args)=={'name','record'} and isinstance(args['name'],str) and type(args['record']) is bool:
+                        return self.actions[name](args['name'],args['record'])
+                    if name in ('convert_batches','export_batch_json') and set(args)=={'names','destination'} and isinstance(args['destination'],str) and isinstance(args['names'],list) and all(isinstance(item,str) for item in args['names']):
+                        return self.actions[name](args['names'],args['destination'])
                     if name == 'export_error' and set(args)=={'id','output'}:
                         return self.actions[name](args['id'],destination=args['output'])
                     argument = {'preview_sound':'kind','cleanup_batches':'names','export_error':'id'}.get(name)

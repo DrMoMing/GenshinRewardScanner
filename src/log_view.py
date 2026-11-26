@@ -1,3 +1,6 @@
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """User progress messages derived from scanner diagnostics; never hide unknown errors."""
 import re
 import json
@@ -6,10 +9,30 @@ def clean_line(value):
     value=value.replace('\x00','')
     return re.sub(r'\x1b\[[0-9;]*[A-Za-z]','',value).strip()
 
+def error_summary(value):
+    parts=value.splitlines(keepends=True)
+    for index,line in enumerate(parts):
+        if line.strip()=='Traceback (most recent call last):':
+            return ''.join(parts[:index]).rstrip() or '程序异常，请查看导出日志'
+    return value
+
+def startup_error_summary(value):
+    summary = error_summary(value).strip()
+    workbook_prefix = '目标工作簿未能准备好'
+    if summary.startswith(workbook_prefix):
+        if re.search(r"(?m)^pywintypes\.error: \((?:32|33), ['\"]CreateFile['\"],", value):
+            return '目标工作簿正被其他程序占用。请关闭该工作簿后重试。'
+        if summary == workbook_prefix + '，尚未操作游戏。':
+            return workbook_prefix + '。请在「错误导出」查看诊断日志。'
+    if '内存' in summary or '提交额度' in summary:
+        if '扫描识别不可用' not in summary:
+            return '内存不足，尚未加载识别模型，扫描识别不可用。释放内存后可重新启动扫描。'
+    return summary or '请在「错误导出」查看诊断日志。'
+
 def scan_message(value):
     text=clean_line(value[:4000])
-    if not text:return None
-    if text.startswith(('[扫描计时]','[收尾时间点]','[双路测量]')):return None
+    if not text or text=='Traceback (most recent call last):':return None
+    if text.startswith(('[扫描计时]','[收尾时间点]','[双路测量]','[详细诊断]')):return None
     if text.startswith(('[拼图后台] {','[截图失败] {')):return None
     if text.startswith('[拼图后台] 原始截图存储积压'):
         return '截图存储暂时跟不上，正在等待落盘；不会丢帧，可中止。'

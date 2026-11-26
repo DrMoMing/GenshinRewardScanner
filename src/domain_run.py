@@ -200,7 +200,9 @@ def game_is_front():
     return bool(target and SR.SA.u.GetForegroundWindow()==target)
 
 
-def fresh_frame(tag='', passive=False, single=False):
+
+
+def fresh_frame(tag='', passive=False, single=False, recover_calibration=False):
     """取当前横排坐标帧；控制器在页面后台常驻并于任务边界校验。
 
     single=True立即返回第一帧，整扫首次准入使用此路；否则间隔220ms
@@ -210,12 +212,46 @@ def fresh_frame(tag='', passive=False, single=False):
     phase=time.perf_counter()
     if passive:
         if not game_is_front():
-            raise RuntimeError('原神不在前台；请切回游戏后重试。'
-                               '[%s]；当前前台窗口标题 = `%s`' % (tag, front_title()))
+            log('[详细诊断] 前台窗口不符：阶段=%s，窗口=%s'%(tag,front_title()))
+            raise RuntimeError('原神不在前台。请切回游戏后重试。')
     elif not SR.ensure_foreground():
         raise RuntimeError('无法确认游戏位于前台，已停止操作[%s]' % tag)
     front_seconds=time.perf_counter()-phase;phase=time.perf_counter()
-    first=SR.grab_game()
+    if recover_calibration:
+        from capture_health import MAX_PAGE_PROBE_AGE_MS, page_frame_age, release_page_capture
+        from domain_geometry import RewardScaleUnavailable
+        try:
+            first=SR.grab_game()
+            age = page_frame_age(SR)
+            if age is not None and age >= MAX_PAGE_PROBE_AGE_MS:
+                raise RewardScaleUnavailable('页面截图已过期')
+        except RewardScaleUnavailable:
+            marker=os.environ.get('DOMAIN_CANCEL_FILE')
+            if (marker and os.path.exists(marker)) or not game_is_front():
+                raise
+            age = page_frame_age(SR)
+            signature = None
+            if age is None and SR._LAST_RAW is not None:
+                from hashlib import blake2b
+                signature = (SR._CTRL_HWND, SR._LAST_RAW.shape, blake2b(SR._LAST_RAW.tobytes(), digest_size=16).digest())
+            repeated = signature is not None and signature == SR._LAST_UNVERIFIED_PAGE_FRAME
+            SR._LAST_UNVERIFIED_PAGE_FRAME = signature
+            if not repeated and (age is None or age < MAX_PAGE_PROBE_AGE_MS):
+                raise
+            SR._LAST_UNVERIFIED_PAGE_FRAME = None
+            reason = '原生截图已过期' if age is not None else '两次未通过标定且截图相同'
+            log('[截图恢复] %s，重建页面截图连接并复验。' % reason)
+            release_page_capture(SR)
+            if (marker and os.path.exists(marker)) or not game_is_front():
+                raise
+            first=SR.grab_game()
+            age = page_frame_age(SR)
+            if age is not None and age >= MAX_PAGE_PROBE_AGE_MS:
+                raise RuntimeError('重连后页面截图仍然过期，请稍后重试。')
+        else:
+            SR._LAST_UNVERIFIED_PAGE_FRAME = None
+    else:
+        first=SR.grab_game()
     first_seconds=time.perf_counter()-phase
     if single:
         # Admission can inspect the first capture immediately. The old path
@@ -250,35 +286,94 @@ def page_kind(img):
     return ('获得页' if tt and whole else '别的页'), ev
 
 
-def require_ready(tag=''):
-    """动作前确认获得标题及完整奖励横排均已出现。"""
-    begin_row_task()
-    img = fresh_frame(tag or 'gate',single=True)
-    bad = SR.check_aspect(img)
-    if bad:
-        raise RuntimeError('错误：%s' % bad)
-    phase=time.perf_counter()
-    kind, ev = page_kind(img)
-    if kind != '获得页':
-        # Transient/missing title or row: one conservative re-capture path.
-        # Never click based on the failed first frame, and never weaken gates.
-        img=fresh_frame((tag or 'gate')+' retry')
+def admit_reward_page(tag, evidence_dir=None):
+    """Apply the page gate before input, with a bounded capture-only recovery."""
+    from capture_health import page_frame_age, release_page_capture
+    from domain_geometry import RewardScaleUnavailable
+    from hashlib import blake2b
+
+    def observe(label, *, initial=False, single=False):
+        SR._LAST_RAW=None
+        try:
+            img=fresh_frame(label,passive=not initial,single=single,recover_calibration=initial)
+        except RewardScaleUnavailable as error:
+            return None, {'标定':str(error)}
         bad=SR.check_aspect(img)
         if bad:raise RuntimeError('错误：%s'%bad)
-        kind,ev=page_kind(img)
+        kind,evidence=page_kind(img)
+        return (img if kind=='获得页' else None),evidence
+
+    def save_rejection(label, frame, evidence, age):
+        if frame is None:return
+        folder=Path(evidence_dir) if evidence_dir else Path(os.environ.get('DOMAIN_TASK_FOLDER') or MOD_DIR)/'诊断'
+        try:
+            folder.mkdir(exist_ok=True,parents=True)
+            path=folder/('准入拒绝_%s_%d.png'%(label,time.time_ns()))
+            it.save_rgb(path,frame)
+            log('[准入拒绝原图] '+str(path)+' '+json.dumps(dict(判据=evidence,帧龄毫秒=age),ensure_ascii=False))
+        except (OSError,ValueError) as error:
+            log('准入诊断截图保存失败：'+str(error))
+
+    begin_row_task()
+    current,evidence=observe(tag,initial=True,single=True)
+    if current is None:
+        # A rejected first view may have measured unrelated UI. Recalibrate
+        # the next capture instead of carrying the rejected geometry forward.
+        SR.clear_reward_geometry()
+        begin_row_task()
+        current,evidence=observe(tag+' retry')
+    if current is not None:
+        SR._LAST_REWARD_REJECTION=None
+        return current,evidence
+
+    raw=SR._LAST_RAW
+    age=page_frame_age(SR)
+    if raw is None or age is not None:
+        # A valid timestamp and a rejected page can be ordinary user input
+        # on a different screen. Preserve evidence without forcing a reconnect.
+        SR._LAST_REWARD_REJECTION=None
+        save_rejection('最后一帧',raw,evidence,age)
+        return None,evidence
+    signature=(SR._CTRL_HWND,raw.shape,blake2b(raw.tobytes(),digest_size=16).digest())
+    now=time.monotonic()
+    previous=SR._LAST_REWARD_REJECTION
+    retried=previous[2] if previous and signature==previous[0] else False
+    SR._LAST_REWARD_REJECTION=(signature,now,retried)
+    marker=os.environ.get('DOMAIN_CANCEL_FILE')
+    # Identical pixels on an accepted page are normal. Only two separate
+    # rejected requests with identical native pixels justify this one retry.
+    if (previous and signature==previous[0] and not retried and now-previous[1]<=30
+            and not (marker and os.path.exists(marker)) and game_is_front()):
+        save_rejection('重连前',raw,evidence,age)
+        log('[截图恢复] 连续任务准入失败且原生画面完全相同，重建页面截图连接并复验。')
+        release_page_capture(SR)
+        SR._LAST_REWARD_REJECTION=(signature,now,True)
+        begin_row_task()
+        current,evidence=observe(tag+' reconnect',single=True)
+        if current is not None:
+            SR._LAST_REWARD_REJECTION=None
+            log('[截图恢复] 重连后已确认获得标题及奖励横排。')
+            return current,evidence
+        raw=SR._LAST_RAW
+        age=page_frame_age(SR)
+    save_rejection('最后一帧',raw,evidence,age)
+    return None,evidence
+
+
+def require_ready(tag=''):
+    """动作前确认获得标题及完整奖励横排均已出现。"""
+    phase=time.perf_counter()
+    img,ev=admit_reward_page(tag or 'gate')
     log('[耗时] 获得标题及横排准入秒 %.4f'%(time.perf_counter()-phase))
-    if kind != '获得页':
-        raise RuntimeError(
-            '当前页面不是副本结算页：%s；未确认获得标题及奖励横排。%s\n'
-            '   实测：%s\n'
-            '   请切换到副本结束后的“获得”结算页后重试。'
-            % (PAGE_TITLE, '', ev))
+    if img is None:
+        log('[详细诊断] 结算页准入未通过：%s'%ev)
+        if ev.get('标题')==PAGE_TITLE:
+            raise RuntimeError('识别到了「获得」页面，但没找到奖励横排。请确认奖励行已出现且未被遮挡。')
+        raise RuntimeError('未识别到副本结算页。请切到副本结束后的「获得」页面再试。')
     slots = bar_slots(img)
     if not slots:
-        raise RuntimeError(
-            '获得页中未识别到卡片行；计数条带 y%d..%d 未检测到亮槽。\n'
-            '   请确认奖励行已出现且未被遮挡，并检查分辨率。证据：%s'
-            % (BAR_BAND[0], BAR_BAND[1], ev))
+        log('[详细诊断] 奖励横排未找到：计数条带=%s，证据=%s'%(BAR_BAND,ev))
+        raise RuntimeError('识别到了「获得」页面，但没找到奖励横排。请确认奖励行已出现且未被遮挡。')
     title_context(img,admission=True)
     row_extent()  # Read optional extent statistics before the first mouse DOWN.
     return img, slots
@@ -715,7 +810,8 @@ def amount_at(img, cx):
 def attach_amounts(img, cards, engine=None):
     """Use known count-bar geometry on native pixels; never invent missing digits."""
     from row_numbers import read_quantities
-    reads = read_quantities(img, cards, engine or ocr(), CARD_W)
+    numeric_root = ROOT if os.environ.get('DOMAIN_NUMBER_ENGINE') == 'tiny-v2' else None
+    reads = read_quantities(img, cards, engine or ocr(), CARD_W, numeric_root)
     for c, hit in zip(cards, reads):
         txt = hit['text']
         c['数量条'] = txt
@@ -823,8 +919,16 @@ def _step_once(dx_px, anchor_x=None, tag='', allow_fast=True, initial=None, head
     def capture_down():
         # 按住后只补拍，不再按一次；确认白边属于实际按下位置才拖。
         deadline = time.monotonic() + 2.0
+        captures = []
         while time.monotonic() < deadline:
             box['img2'] = SR.grab_game()
+            diagnostic = getattr(SR, '_LAST_CAPTURE_DIAGNOSTIC', {})
+            native = diagnostic.get('native', {})
+            captures.append({'job':diagnostic.get('job_id'), 'connection':diagnostic.get('connection'),
+                             'source':native.get('source_time_100ns'), 'mapped':native.get('mapped_pixel_sample'),
+                             'alternate_row':native.get('new_staging_row_sample'),
+                             'original_row':native.get('original_row_sample'),
+                             'alternate_error':native.get('comparison_map_hresult')})
             a = find_pressed_anchor(box['img2'],ax)
             if a is not None and abs(a[0] - ax) < CARD_W / 2:  # 同格容差
                 box['anchor2']=a
@@ -835,8 +939,23 @@ def _step_once(dx_px, anchor_x=None, tag='', allow_fast=True, initial=None, head
         evidence = os.path.join(FRAME_DIR, '拖动白边失败_%s.png' % time.strftime('%Y%m%d_%H%M%S'))
         os.makedirs(FRAME_DIR, exist_ok=True)
         it.save_rgb(evidence, box['img2'])
-        raise AnchorNotConfirmed('按下后未确认目标卡白边：按点=%d，最后锚点=%s，证据=%s；本次不拖动。' %
-                           (ax, a, evidence))
+        outcome = {'captures':captures, 'desktop_anchor':None, 'recovery':None}
+        desktop_evidence = getattr(SR, 'desktop_anchor_evidence', None)
+        if desktop_evidence is not None:
+            try:
+                desktop = desktop_evidence()
+                if desktop is not None:
+                    desktop_anchor = find_pressed_anchor(desktop, ax)
+                    outcome['desktop_anchor'] = None if desktop_anchor is None else int(desktop_anchor[0])
+                    it.save_rgb(evidence.replace('.png', '_桌面对照.png'), desktop[CY-115:CY+145])
+                    if desktop_anchor is not None and abs(desktop_anchor[0]-ax) < CARD_W / 2:
+                        SR.invalidate_capture('desktop_target_changed')
+                        outcome['recovery'] = 'reconnect_after_release'
+            except Exception as error:
+                outcome['desktop_error'] = str(error)
+        log('[截图取证] '+json.dumps(outcome,ensure_ascii=False))
+        log('[详细诊断] 目标卡白边未确认：按点=%d，最后锚点=%s，截图=%s'%(ax,a,evidence))
+        raise AnchorNotConfirmed('未确认目标卡片高亮，已停止本次扫描。')
     def capture_held():
         # Completed drag: capture/freeze geometry before UP; no PNG encoding here.
         started=time.perf_counter()
@@ -850,14 +969,9 @@ def _step_once(dx_px, anchor_x=None, tag='', allow_fast=True, initial=None, head
                 allowed=bool(allow_fast and extreme is not None and abs(box['anchor2'][0]-extreme)<CARD_W/2)
                 box['head_future']=head_context.submit(box['held']['frame'],dx_px,allowed)
         except Exception as error:log('[端点试验] 松手前截图失败，继续原方案：%s'%error)
-    try:
-        drag_options={'overlap_hold':True} if row_head else {}
-        if hold_progress is not None:drag_options['on_hold']=hold_progress
-        SR.drag_h(ax, dx_px, py=CY, on_down=capture_down,before_up=capture_held,lift_to_top=True,**drag_options)
-    except Exception:
-        # drag_h 的回调在 touch_down 后运行；异常也必须释放按住状态。
-        SR.get_ctrl().post_touch_up().wait()
-        raise
+    drag_options={'overlap_hold':True} if row_head else {}
+    if hold_progress is not None:drag_options['on_hold']=hold_progress
+    SR.drag_h(ax, dx_px, py=CY, on_down=capture_down,before_up=capture_held,lift_to_top=True,**drag_options)
     a2 = box.get('anchor2')
     held=box.get('held');fast=False;reason='松手前截图不可用'
     if held is not None:held['release_completed']=time.perf_counter()
@@ -1025,7 +1139,8 @@ def step(dx_px,anchor_x=None,tag='',allow_fast=True,max_attempts=3,initial=None,
         if hold_progress is not None:options['hold_progress']=hold_progress
         delta,latest=_step_once(dx_px,anchor_x,tag,allow_fast=allow_fast,initial=initial,**options)
     except AnchorNotConfirmed as error:
-        log('   白边按下确认失败，鼠标已松开；本趟停止，不再拖动：%s'%error)
+        log('[详细诊断] 白边按下核验：%s'%error)
+        log('按下后未能确认卡片白边，已停止本次扫描。')
         return None,None
     if delta is not None:return delta,latest
     attempt=globals().get('_LAST_DRAG_ATTEMPT')
@@ -1270,6 +1385,10 @@ def click_at(x, y, release_wait):
         move_wait=0.12 if (x,y)==SR.PARK_1920 else OPEN_MOVE_WAIT
         if move_wait:
             _timed_sleep(move_wait,"页面等待:点击前移动稳定")
+        position_ok=SR.cursor_matches(*target,tolerance=2)
+        log('[点击落点] '+json.dumps(SR._LAST_CURSOR_CHECK,ensure_ascii=False))
+        if not position_ok:
+            raise RuntimeError('鼠标移动后未到达目标坐标，未点击。')
     ready_at=time.perf_counter()
     down = SR.SA.mouse(0x0002)
     down_clock=time.monotonic()
@@ -1432,7 +1551,7 @@ def wait_popup_capture(name, timeout=6.0, baseline=None,gate=None,down_clock=Non
             # outside click. Controller jobs remain ordered on this owner.
             started=time.perf_counter()
             if SR.move_abs(*SR.to_screen(*SR.PARK_1920))!=1:
-                raise RuntimeError('详情确认期间提前停靠失败；停止，未点击界外。')
+                raise RuntimeError('详情确认期间提前停靠失败。')
             parked=True
             log('[耗时] 提前关闭停靠 '+json.dumps({'秒':round(time.perf_counter()-started,4),'已点击':False},ensure_ascii=False))
             # This frame predates the move and may still show opening animation.
@@ -1495,7 +1614,7 @@ def wait_popup_capture(name, timeout=6.0, baseline=None,gate=None,down_clock=Non
         check_seconds+=time.perf_counter()-phase
         if not quick or frames>2:_timed_sleep(0.03,"页面等待:0.03")
     log('[耗时] 详情帧轨迹 '+json.dumps(trace,ensure_ascii=False))
-    raise RuntimeError('详情画面未打开或未静止：目标=%s；已停手，不补点。' % name)
+    raise RuntimeError('详情画面未打开或未静止：目标=%s。' % name)
 
 
 def detail_ocr_frame(img):
@@ -1602,10 +1721,10 @@ def read_popup_items(engine, img):
         items,evidence=read_layout(engine,img,ROOT)
         _,detail=parse_popup_items(items)
         star,rgb=popup_star_from_band(img,items)
-        if star not in (2,3,4,5):raise LayoutRejected('unconfirmed quality band')
+        if star not in (2,3,4,5):raise LayoutRejected('未确认圣遗物星级')
         detail['星级']=star
         if detail['种类']!='圣遗物' or not popup_fields_ready(detail):
-            raise LayoutRejected('incomplete artifact fields')
+            raise LayoutRejected('圣遗物识别字段不完整')
         errors=substat_structure_errors(detail,star)+stat_value_errors(detail,star)
         if errors:raise LayoutRejected('；'.join(errors))
         if os.environ.get('DOMAIN_DETAIL_MATCH_RACE')=='1':
@@ -1745,7 +1864,7 @@ def wait_popup(name, timeout=6.0):
         else:
             previous = None
         _timed_sleep(0.12,"页面等待:0.12")
-    raise RuntimeError('弹窗未稳定或字段不全：目标=%s；最后读到=%s。已停手，未追加点击。'
+    raise RuntimeError('弹窗未稳定或字段不全：目标=%s；最后读到=%s。'
                        % (name, txt))
 
 
@@ -1796,7 +1915,7 @@ def _wait_clean(timeout=6.0, reference=None):
             continue
         if page_kind(img)[0]=='获得页':return img
         _timed_sleep(0.12,"页面等待:0.12")
-    raise RuntimeError('关闭弹窗后未确认奖励页恢复；已停手，未点下一张。')
+    raise RuntimeError('关闭弹窗后未确认奖励页恢复。')
 
 
 def wait_row_still(first, timeout=3.0):
@@ -1831,7 +1950,7 @@ def wait_row_still(first, timeout=3.0):
         if anchor is not None:
             anchor,current=settle_small_drag(anchor,current,evidence['anchor_before'],evidence['direction'])
         if anchor is None:
-            raise RuntimeError('端点已确认，但松手后画面仍无法确认；停止，不追加拖动或使用持握图点击/拼图')
+            raise RuntimeError('端点已确认，但松手后画面仍无法确认。')
         evidence['released_frame']=current
         return current
     if evidence and evidence.get('after') is first and (evidence.get('row_still') or evidence.get('anchor_unique')):return first
@@ -1842,7 +1961,7 @@ def wait_row_still(first, timeout=3.0):
         if region_delta(previous, img, (SCAN_X[0], 572, SCAN_X[1]-SCAN_X[0], 72)) <= 2.0:
             return img
         previous = img
-    raise RuntimeError('拖后奖励条带未静止；停止，不追加拖动。')
+    raise RuntimeError('拖后奖励条带未静止。')
 
 
 def end_evidence(cards, after_cards, delta):
@@ -1996,7 +2115,7 @@ def _return_to_start(initial=None,head=None):
                 return current,all_cards
             break
         if head is not None:next_frame=dragged
-    raise RuntimeError('未确认行首的好感经验 / 摩拉；已停手，不继续右拖或建立索引。')
+    raise RuntimeError('未确认行首的好感经验或摩拉。')
 
 
 class SlowLane:
@@ -2874,7 +2993,6 @@ def do_check():
     except RuntimeError as e:
         log('扫描失败：%s' % e)
         save_check_rejection(e)
-        log('   页面检查未通过，未执行点击或拖动；请根据上述原因处理。')
         return 1
     bad = SR.check_aspect(img)
     if bad:
@@ -2891,14 +3009,13 @@ def do_check():
         log('当前页面不符合扫描条件，已停止。请切回获得页后重试。')
         return 1
     log('将按行拖动并逐张检查卡片详情，请勿操作鼠标。')
-    log('   确认没人用电脑后：`.venv/Scripts/python.exe -u "%s" read --go`' % os.path.relpath(__file__, ROOT))
     return 0
 
 
 def do_read(go):
     """读整行（本次副本出了什么 + 每件详情）。无 `--go` ⇒ 只做只读检查（工具侧强制门，铁律 10）。"""
     if not go:
-        log('将拖动卡片行并逐张打开卡片；使用 --go 开始操作。')
+        log('未确认开始，未执行整趟扫描。')
         return 2
     img, _slots = require_ready('read')            # ★ 先查后点：进门就判，不合格立刻停
     log('门通过：已确认获得页，开始扫描。')
@@ -2909,8 +3026,8 @@ def do_read(go):
         fail.append('未确认到行尾，不能导出完整清单')
     _write(res, fail)
     if fail:
-        raise RuntimeError('自校验未通过，共 %d 条；已停止且未写入导出：\n   %s'
-                           % (len(fail), '\n   '.join(fail)))
+        for reason in fail:log('[详细诊断] 自校验：'+reason)
+        raise RuntimeError('校验发现 %d 处异常，未导出本次扫描结果。'%len(fail))
     log('读过：%d 条 ｜ 分布 %s' % (len(res['rows']), dist(res['rows'])))
     return 0
 
@@ -2975,7 +3092,7 @@ def do_single(image_path=None):
     event_path=os.environ.get('DOMAIN_EVENTS')
     if event_path:
         with open(event_path,'a',encoding='utf-8') as stream:stream.write(json.dumps({'event':'item','item':item},ensure_ascii=False)+'\n')
-    log('单卡识别完成：%s，%s星，%s，%d条副词条；未操作鼠标。'%(d['名字'],d['星级'],d['等级'],len(d['副词条'])))
+    log('单卡识别完成：%s，%s 星，%s，%d 条副词条。'%(d['名字'],d['星级'],d.get('部位') or d['等级'],len(d['副词条'])))
     return 0
 
 
@@ -2988,19 +3105,13 @@ def row_start_generic(evidence_dir=None):
 
 def _row_start_generic(evidence_dir=None,head=None):
     """获得 + 完整横排准入；回首仅依赖拖动位移和卡位。"""
-    begin_row_task()
-    SR._LAST_RAW=None  # A pre-capture failure must not retain the last task's image.
-    current=fresh_frame('montage')
-    from native_frame import save_frame
-    kind,admission=page_kind(current)
+    current,admission=admit_reward_page('montage',evidence_dir)
     log('[拼图准入] '+json.dumps(admission,ensure_ascii=False))
     if evidence_dir:
         with open(os.path.join(evidence_dir,'准入判据.json'),'w',encoding='utf-8') as stream:
             json.dump(admission,stream,ensure_ascii=False,indent=2)
-    if kind!='获得页':
-        if evidence_dir:
-            save_frame(os.path.join(evidence_dir,'准入拒绝_定位视图.png'),current)
-        raise RuntimeError('独立拼图未确认获得标题及完整横排，未开始拖动；拒绝画面已保存')
+    if current is None:
+        raise RuntimeError('独立拼图未确认获得标题及完整横排，未开始拖动。')
     title_context(current,admission=True)
     row_extent()
     if head is not None:
@@ -3011,7 +3122,7 @@ def _row_start_generic(evidence_dir=None,head=None):
         if not cards:raise RuntimeError('未找到完整横排卡位')
         delta,after=(step(max(1,len(cards)-2)*PITCH,initial=current,head_context=head) if head is not None
                      else step(max(1,len(cards)-2)*PITCH,initial=current))
-        if delta is None or after is None:raise RuntimeError('拼图回到起点时白边定位失败；已停手')
+        if delta is None or after is None:raise RuntimeError('拼图返回起点时，未定位到白边。')
         at_start=drag_endpoint_confirmed(1)
         current=wait_row_still(after)
         if at_start:return current
@@ -3053,7 +3164,7 @@ def do_montage():
                 if initial_row_complete(current,bar_slots(current)):
                     log('首帧整排完整，直接汇总拼图；不做收尾拖动。');complete=True;break
             delta,after=step(-max(1,len(cards)-2)*PITCH,initial=current)
-            if delta is None or after is None:raise RuntimeError('拼图拖动后未确认白边位置；已停手')
+            if delta is None or after is None:raise RuntimeError('拼图拖动后未确认白边位置。')
             if drag_endpoint_confirmed(-1):
                 # Last whole card is in the already-added current screen.
                 # The held overscroll frame is diagnostic only, never stitched.
@@ -3081,7 +3192,9 @@ def do_montage():
             items.append({'序号':card['index']+1,'名称':card.get('name',''),'数量':card.get('数量'),
                 '数量可信':bool(card.get('数量可信')),'种类':'横排物品','星级':('%d★'%card['star']) if card.get('star') else '',
                 '字段来源':'横排OCR/品质色；未打开详情','副词条':[],'副词条明细':[],'副词条数':'','主词条名称':'','主词条数值':''})
-        if jobs.problems:log('横排信息部分未识别，字段留空，拼图保留：'+json.dumps(jobs.problems,ensure_ascii=False))
+        if jobs.problems:
+            log('[详细诊断] 未识别的横排字段：'+json.dumps(jobs.problems,ensure_ascii=False))
+            log('横排部分信息未识别，对应字段留空；拼图已保留。')
         path=montage.save(os.path.join(folder,'横排拼图.png'))
         export={'页面':'原神 · 独立横排拼图','读于':time.strftime('%Y-%m-%d %H:%M:%S'),'共':len(items),'横排卡数':len(seen),'获得物':items,'横排拼图':path,'横排信息识别':info,'真帧目录':folder,
                 '横排信息问题':jobs.problems,
@@ -3125,13 +3238,13 @@ def main():
     ap.add_argument('--image',help='已截图单卡：只读文件，不访问游戏')
     ap.add_argument('--go', action='store_true', help='真跑（占鼠标）')
     a = ap.parse_args()
-    log('副本结算页模块｜命令=%s｜--go 确认=%s' % (a.cmd, '开' if a.go else '关'))
+    log('副本结算页模块｜命令=%s｜操作确认=%s' % (a.cmd, '开' if a.go else '关'))
     try:
         if a.cmd == 'read' and not a.go:              #  先看确认门：没 `--go` 连控制器都不用建
             return do_read(False)
         if a.cmd=='single':return do_single(a.image)
         if a.cmd=='montage':
-            if not a.go:raise RuntimeError('独立拼图需要--go，可能拖动横排')
+            if not a.go:raise RuntimeError('未确认开始，未执行独立拼图。')
             return do_montage()
         SR.get_ctrl()
         if a.cmd == 'read':

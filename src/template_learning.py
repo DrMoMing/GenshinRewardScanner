@@ -169,6 +169,9 @@ def enqueue(work_id,records,mode):
         if len(selected)==2:break
     for s in samples:s['background_audits']=[]
     for i,a in selected:samples[i]['background_audits'].append(a)
+    # Hybrid records with neither new samples nor independent audit need no disk job.
+    samples=[s for s in samples if s['engine']!='hybrid-v3' or s['learning_fields'] or s['background_audits']]
+    if not samples:return False
     job=dict(work_id=work_id,created_ns=time.time_ns(),owner_pid=os.getpid(),mode=mode,samples=samples,
              audit_priority=min((a['margin'] for _,a in selected),default=3.))
     try:return journal().put('learning_enqueued',job=job,work_id=work_id,samples=len(samples))
@@ -239,7 +242,7 @@ def learn_pending(root):
                 for sample in job['samples']:
                     frame=prepare(load_frame(sample['source']))
                     raw=getattr(frame,'native_rgb',frame)
-                    if list(raw.shape)!=sample['shape']:raise ValueError('saved source geometry changed')
+                    if list(raw.shape)!=sample['shape']:raise ValueError('存档截图的尺寸与学习任务记录不一致。')
                     if sample.get('engine')=='hybrid-v3':
                         if rectangles is None:raise RuntimeError('hybrid learner missing')
                         if sample.get('background_audits'):

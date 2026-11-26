@@ -1,6 +1,9 @@
 # Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # AI-generated project code: written and modified with OpenAI Codex.
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """Export one task's evidence without modifying its original files.
 
 The caller selects a task batch and any additional task-scoped logs. Shared

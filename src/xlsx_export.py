@@ -224,12 +224,14 @@ class ComSink:
                 try:
                     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,progid):registered.append(progid)
                 except FileNotFoundError:pass
+            if not registered:
+                raise RuntimeError('未找到可用的 Excel/WPS 桌面自动化接口。')
             errors=[]
             for progid in registered:
                 try:
                     self.excel=client.DispatchEx(progid);break
                 except Exception as error:errors.append(str(error))
-            else:raise RuntimeError('未能连接已注册的Excel/WPS桌面自动化接口：'+'；'.join(errors))
+            else:raise RuntimeError('已找到 Excel/WPS，但无法启动：'+'；'.join(errors))
             if self.path.exists():self.book=self.excel.Workbooks.Open(str(self.path))
             else:
                 self.book=self.excel.Workbooks.Add()

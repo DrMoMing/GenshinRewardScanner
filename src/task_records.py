@@ -129,6 +129,14 @@ class TaskRecords:
             record['status'] = 'cancelled' if cancelled else ('success' if success else 'failed')
             record['message'] = message or record['message'] or ('' if success else '任务未成功结束，请查看关联日志')
             record['finished_ns'] = time.time_ns()
+            for name in record.get('batches',[]):
+                try:
+                    owner=json.loads((self.output/'internal_复现'/name/'任务归属.json').read_text(encoding='utf8'))
+                    stamp=owner.get('workbook_ended_ns')
+                    if type(stamp) is int and stamp>0:
+                        record['workbook_ended_ns']=max(record.get('workbook_ended_ns',0),stamp)
+                except (OSError,ValueError,AttributeError):
+                    pass
             self.revision += 1
             for name in record.get('batches',[]):
                 self._submit(self._finish_folder,name,record['finished_ns'])
@@ -194,6 +202,8 @@ class TaskRecords:
                 stars=' / '.join(str(s)+'★' for s in record.get('scan_stars',[]) if type(s) is int and 2<=s<=5))
             linked=False
             own_row=by_name.get('任务记录/'+record['id'])
+            workbook_end=record.get('workbook_ended_ns')
+            if type(workbook_end) is int and workbook_end>0:metadata['modified_ns']=workbook_end
             if own_row is not None:own_row.update(metadata,record_only=True);linked=True
             for name in record.get('batches',[]):
                 if name in by_name:by_name[name].update(metadata);linked=True

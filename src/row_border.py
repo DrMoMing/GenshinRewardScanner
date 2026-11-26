@@ -1,6 +1,9 @@
 # Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # AI-generated project code: written and modified with OpenAI Codex.
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """Assign a connected white top/side frame to its card, including clipped ends.
 
 Slots supply a search centre and measured normal width/pitch, not ownership.

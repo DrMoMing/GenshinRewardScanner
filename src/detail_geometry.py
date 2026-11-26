@@ -12,7 +12,7 @@ def prepare(raw):
     """Use the complete native frame; scaling for geometry never clips an edge."""
     raw=np.asarray(raw)[:,:,:3]
     h,w=raw.shape[:2]
-    if h<1 or w<1:raise ValueError('empty native detail screenshot')
+    if h<1 or w<1:raise ValueError('原始详情截图为空')
     scale=h/1080.
     view=cv2.resize(raw,(math.ceil(w/scale),math.ceil(h/scale)),interpolation=cv2.INTER_AREA) if scale!=1 else raw
     base=CoordinateFrame(view,raw,{'scale':scale,'offset':0})

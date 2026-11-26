@@ -213,7 +213,14 @@ def inventory(output,busy=False,pending_references=(),display_cache=None):
         result.append(Batch(folder.name,tuple(entries),reason,tuple(errors),kind,owner.get('task',''),owner.get('finished_ns',0),tuple(owner.get('record_sessions',[]))))
     return result
 
-def cleanup_plan(batches,selected):
+def cleanup_category(name,batch_name=None):
+    suffix=Path(name).suffix.lower()
+    if suffix in ('.png','.jpg','.jpeg','.bmp','.webp'):return 'images'
+    if (batch_name and name==batch_name+'.json') or Path(name).name == 'export.json' or Path(name).name.startswith('副本产物_'):return 'results'
+    return 'diagnostics'
+
+
+def cleanup_plan(batches,selected,categories=None):
     """Produce a preview only. Actual file deletion needs a separate reviewed executor."""
     selected=set(selected)
     known={batch.name for batch in batches}
@@ -222,13 +229,17 @@ def cleanup_plan(batches,selected):
     for batch in batches:
         if batch.name not in selected:continue
         if batch.protected or batch.errors:raise ValueError(batch.name+' 当前不可清理')
-        result.append(dict(batch=batch.name,bytes=batch.reclaimable,
-            files=sorted((entry.relative for entry in batch.files if entry.cleanable),key=lambda name:(name in ('任务归属.json','开始.json','结束.json'),name)),
-            retained=[entry.relative for entry in batch.files if not entry.cleanable]))
+        eligible=[entry for entry in batch.files if entry.cleanable and (categories is None or cleanup_category(entry.relative,batch.name) in categories)]
+        if categories is not None and len(eligible)!=len(batch.files):
+            eligible=[entry for entry in eligible if entry.relative not in ('任务归属.json','开始.json','结束.json')]
+        names={entry.relative for entry in eligible}
+        if names:result.append(dict(batch=batch.name,bytes=sum(entry.size for entry in eligible),
+            files=sorted(names,key=lambda name:(name in ('任务归属.json','开始.json','结束.json'),name)),
+            retained=[entry.relative for entry in batch.files if entry.relative not in names]))
     return result
 
 
-def retention_plan(batches, mode, value, now_ns=None):
+def retention_plan(batches, mode, value, now_ns=None, categories=None):
     """Preview automatic retention using each batch's latest file modification.
 
     Protected batches are always retained and do not use up the completed-batch
@@ -246,13 +257,46 @@ def retention_plan(batches, mode, value, now_ns=None):
     latest = lambda batch: batch.finished_ns or max((entry.modified_ns for entry in batch.files), default=0)
     eligible.sort(key=lambda batch: (latest(batch), batch.name), reverse=True)
     if mode == 'batches':
-        # Session protocols span many tasks: retain them separately so they do
-        # not silently consume the user's requested completed-task allowance.
-        tasks=[batch for batch in eligible if batch.kind not in ('session','task_record')]
-        sessions=[batch for batch in eligible if batch.kind=='session']
-        records=[batch for batch in eligible if batch.kind=='task_record']
-        expired=tasks[value:]+sessions[value:]+records[value:]
+        expired = eligible[value:]
     else:
         cutoff = (time.time_ns() if now_ns is None else now_ns) - value * 86400 * 10**9
         expired = [batch for batch in eligible if latest(batch) < cutoff]
-    return cleanup_plan(batches, [batch.name for batch in expired])
+    return cleanup_plan(batches, [batch.name for batch in expired], categories)
+
+
+def convertible_source(output,batch):
+    from diagnostic_bundle import checked_path
+    if batch.kind=='task_record' or batch.errors:return None
+    folder=batch_root(output,batch)
+    names={entry.relative for entry in batch.files}
+    fallback=sorted((name for name in names if Path(name).name==name and name.startswith('副本产物_') and name.endswith('.json')),reverse=True)
+    for name in [batch.name+'.json','export.json',*fallback]:
+        if name not in names:continue
+        try:
+            path=checked_path(folder,name)
+            data=json.loads(path.read_text(encoding='utf8'))
+            if isinstance(data,dict) and isinstance(data.get('获得物'),list) and all(isinstance(item,dict) for item in data['获得物']):return path
+        except (OSError,ValueError):continue
+    return None
+
+
+def batch_montage(output,batch,value):
+    from diagnostic_bundle import checked_path
+    if not isinstance(value,str) or not value:return None
+    folder=batch_root(output,batch)
+    value=Path(value)
+    try:
+        relative=value.relative_to(folder) if value.is_absolute() else value
+    except ValueError:
+        # Absolute paths from a moved installation can be recovered only when
+        # the exact same task directory is part of the recorded path.
+        parts=value.parts
+        matching=[i for i,part in enumerate(parts) if part==batch.name]
+        if len(matching)!=1:return None
+        relative=Path(*parts[matching[0]+1:])
+    if relative.suffix.lower() not in ('.png','.jpg','.jpeg'):return None
+    if not any(Path(entry.relative)==relative for entry in batch.files):return None
+    try:
+        path=checked_path(folder,relative)
+        return path if path.is_file() else None
+    except (OSError,ValueError):return None

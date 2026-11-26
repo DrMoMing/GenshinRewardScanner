@@ -7,6 +7,9 @@
 #ifndef StarterData
   #error StarterData directory is required
 #endif
+#ifndef ReleaseVersion
+  #define ReleaseVersion "0.3.0-preview.9"
+#endif
 #ifdef InstallSelfTest
   #define ApplicationId "{{E189C77E-1CE7-4B4C-9AE5-88563EC10F54}"
   #define UninstallKey "{E189C77E-1CE7-4B4C-9AE5-88563EC10F54}_is1"
@@ -16,14 +19,14 @@
   #define ApplicationId "{{9BFFEB07-50E4-4C84-8DCB-E13F34427D43}"
   #define UninstallKey "{9BFFEB07-50E4-4C84-8DCB-E13F34427D43}_is1"
   #define ProductName "原神副本扫描器"
-  #define SetupFilename "DomainScanner_Setup_0.3.0-preview.9"
+  #define SetupFilename "DomainScanner_Setup_" + ReleaseVersion
 #endif
 
 [Setup]
 AppId={#ApplicationId}
 AppName={#ProductName}
-AppVersion=0.3.0-preview.9
-AppVerName={#ProductName} 0.3.0 预览版9
+AppVersion={#ReleaseVersion}
+AppVerName={#ProductName} {#ReleaseVersion}
 DefaultDirName={autopf}\DomainScanner
 DefaultGroupName={#ProductName}
 AppendDefaultDirName=yes
@@ -377,10 +380,27 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var ExitCode: Integer;
+    ReportPath: String;
+    ReportText: AnsiString;
+    Started: Boolean;
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssPostInstall then begin
     SaveStringToFile(ExpandConstant('{app}\安装标识.txt'),
       'DomainScanner|{#UninstallKey}|' + GetSHA256OfString(Lowercase(RemoveBackslashUnlessRoot(ExpandConstant('{app}')))), False);
+    ReportPath := ExpandConstant('{tmp}\runtime-initialization.txt');
+    Log('Starting runtime initialization after installing files.');
+    Started := Exec(ExpandConstant('{app}\DomainScanner.exe'), '--initialize ' + AddQuotes(ReportPath),
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ExitCode);
+    if Started and (ExitCode = 0) then
+      Log('Runtime initialization complete.')
+    else begin
+      Log('Runtime initialization failed. Exit code: ' + IntToStr(ExitCode));
+      if LoadStringFromFile(ReportPath, ReportText) then Log(UTF8Decode(ReportText));
+      SuppressibleMsgBox('程序已安装，但首次初始化未完成。下次启动扫描器时会重试。详情见安装日志。',
+        mbInformation, MB_OK, IDOK);
+    end;
+  end;
 end;
 
 function InitializeUninstall: Boolean;

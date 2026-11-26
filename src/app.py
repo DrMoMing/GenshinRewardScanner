@@ -12,6 +12,20 @@ import time
 
 BASE = Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[1]
 RESOURCE = Path(sys._MEIPASS) if getattr(sys,'frozen',False) else BASE
+if __name__ == '__main__' and sys.argv[1:2] == ['--initialize']:
+    from runtime_initialization import initialize_runtime
+
+    report = Path(sys.argv[2]) if len(sys.argv) == 3 else None
+    try:
+        initialize_runtime(BASE, RESOURCE, check_models=True)
+    except (OSError, ValueError) as error:
+        if report is not None:
+            report.write_text(str(error), encoding='utf-8')
+        raise SystemExit(1)
+    if report is not None:
+        report.write_text('Runtime initialization complete', encoding='utf-8')
+    raise SystemExit(0)
+
 _release_manifest=RESOURCE/'发行资料/manifest.json'
 if _release_manifest.is_file():
     if json.loads(_release_manifest.read_text(encoding='utf8')).get('desktop_release_ui'):
@@ -212,6 +226,9 @@ class ScanService:
             self.check_cancel()
             if self.page_model_ready:
                 if admission(memory_status(),[],1536*MiB):return
+                if self.pool_retention_timer is not None:
+                    self.release_recognizers()
+                    if admission(memory_status(),[],1536*MiB):return
                 raise RuntimeError('内存不足，已有识别模型保留，但扫描识别不可用。应用可继续使用；释放内存后可重新启动扫描。')
             if can_load_model():return
             raise RuntimeError('内存不足，尚未加载识别模型，扫描识别不可用。应用可继续使用；释放内存后可重新启动扫描。')
@@ -242,6 +259,7 @@ class ScanService:
         self.single_pool=None;self.single_pool_workers=[]
         self.page_worker=None
         self.page_model_ready=False
+        self.pool_retention_timer=None
         self.initial_preload_stopped=False
         self.consumer=None
         stamp=time.strftime('%Y%m%d_%H%M%S')+'_%06d'%(time.time_ns()%1000000)
@@ -250,6 +268,7 @@ class ScanService:
         self.target=None
         self.connection_info=None
         self.cancel_file=self.journal.with_suffix('.cancel')
+        self.single_cancel_file=self.journal.with_suffix('.single.cancel')
         import threading
         self.single_audit_lock=threading.Lock()
         self.recognizer_lock=threading.RLock()
@@ -283,11 +302,61 @@ class ScanService:
                 stream.write(json.dumps({'time_ns':time.time_ns(),'event':kind,'value':value},ensure_ascii=False)+'\n')
     def cancel(self):
         self.cancel_file.write_text('cancel',encoding='utf-8')
-    def reset_cancel(self):self.cancel_file.unlink(missing_ok=True)
+    def cancel_singles(self):
+        self.single_cancel_file.write_text('cancel',encoding='utf-8')
+    def reset_cancel(self):
+        self.cancel_file.unlink(missing_ok=True)
+        self.single_cancel_file.unlink(missing_ok=True)
     def check_cancel(self):
         if self.cancel_file.exists():raise RuntimeError('用户已中止任务')
         from full_diagnostics import check_trace_health
         check_trace_health()
+
+    def check_single_cancel(self):
+        if self.single_cancel_file.exists():raise RuntimeError('用户已中止单卡任务')
+        from full_diagnostics import check_trace_health
+        check_trace_health()
+
+    def page_overlap_block(self):
+        from resource_guard import admission, memory_status, MiB
+        import shutil
+        try:
+            if any(shutil.disk_usage(folder).free<8*MiB for folder in (OUTPUT,self.target.parent)):
+                return '磁盘空间不足，无法同时保存单卡和页面任务。'
+            if not admission(memory_status(),[],384*MiB):
+                return '单卡后台繁忙，当前可用内存或系统提交额度不足。请等单卡处理完再试。'
+        except (OSError,RuntimeError):
+            return '暂时无法确认系统资源。请等单卡处理完再试。'
+        return ''
+
+    def set_page_workbook_barrier(self, queue):
+        self._output_context.page_workbook_barrier=queue
+
+    def publish_page_workbook(self,lifecycle,final=True):
+        staged=lifecycle.get('staged')
+        if staged is None:return
+        if not lifecycle['began'] and staged['queue'].pending:
+            if not final:return
+            self.report_progress('正在收尾：等待先接收的单卡保存，随后写入本次页面任务…')
+            staged['queue'].wait_idle()
+        try:
+            if not lifecycle['began']:
+                self.ensure_consumer()
+                if self.last_task_folder():
+                    from output_layout import mark
+                    mark(self.last_task_folder(),save_pending=True,writer_pid=self.consumer.pid,writer_started_ns=time.time_ns())
+                self.append_event(staged['begin'])
+                lifecycle['began']=True
+            with staged['path'].open('rb') as source:
+                source.seek(staged['offset'])
+                while line:=source.readline():
+                    if not line.endswith(b'\n'):break
+                    self.append_event(json.loads(line))
+                    staged['offset']=source.tell()
+        except Exception:
+            lifecycle.pop('staged')
+            raise
+        if final:lifecycle.pop('staged')
     def capture_worker(self):
         if getattr(self,'_capture_closed',False):raise RuntimeError('截图服务正在关闭')
         worker=getattr(self,'_capture_worker',None)
@@ -297,31 +366,40 @@ class ScanService:
             self._capture_worker=worker
         return worker
     def check_capture_health(self):
-        """Idle-only probe on the camera executor; never compare image equality.
+        """Verify an anomalous signal before rebuilding the single-card connection."""
+        from capture_health import single_probe_reason
+        info = self.capture_target_info()
+        reason = single_probe_reason(info.get('capture_health', {}))
+        if not info.get('foreground') or not info.get('connected') or not reason:
+            return False
+        camera = self.capture_worker()
+        self.hotkeys.log('[截图恢复] 单卡截图状态异常：' + reason + '，开始验证。')
+        try:
+            ready = camera.request('health')
+        except Exception as error:
+            self.hotkeys.log('[截图恢复] 检测到单卡截图异常：' + str(error))
+            if not self.capture_target_info().get('foreground'):
+                self.hotkeys.log('[截图恢复] 窗口已转后台，暂缓单卡重连。')
+                return False
+            self.hotkeys.log('[截图恢复] 开始重建单卡截图连接。')
+            try:
+                if not camera.request('prepare', refresh=True) or not camera.request('health'):
+                    return False
+            except Exception as retry_error:
+                self.hotkeys.log('[截图恢复] 单卡重建后验证失败：' + str(retry_error))
+                raise
+            self.hotkeys.log('[截图恢复] 单卡截图连接已重建并验证；探测图片未保存。')
+            return True
+        if ready:
+            self.hotkeys.log('[截图恢复] 单卡截图验证通过，继续使用现有连接。')
+        return ready
 
-        A static game is legitimate. Validate the operation and client geometry,
-        then reconnect after failure without saving or recognising the probe.
-        The caller must not schedule this alongside foreground scan actions."""
+    def check_page_capture_health(self):
+        """Check the independent page connection under its own RPC guard."""
         guard=self._page_guard()
         if not guard.acquire(blocking=False):return False
         try:
             if not self.capture_target_info().get('foreground'):return False
-            camera=self.capture_worker()
-            try:ready=camera.request('health')
-            except Exception as error:
-                self.hotkeys.log('[截图恢复] 检测到单卡截图异常：'+str(error))
-                if not self.capture_target_info().get('foreground'):
-                    self.hotkeys.log('[截图恢复] 窗口已转后台，暂缓单卡重连。')
-                    return False
-                self.hotkeys.log('[截图恢复] 开始重建单卡截图连接。')
-                try:
-                    camera.request('prepare',refresh=True)
-                    ready=camera.request('health')
-                except Exception as retry_error:
-                    self.hotkeys.log('[截图恢复] 单卡重建后验证失败：'+str(retry_error))
-                    raise
-                self.hotkeys.log('[截图恢复] 单卡截图连接已重建并验证；探测图片未保存。')
-            if not ready:return False
             page=self.page_worker
             if page is not None and page.process.poll() is None:
                 request=page.submit(None,{},args=['capture-health'])
@@ -338,6 +416,15 @@ class ScanService:
         return self.__dict__.setdefault('_page_rpc_guard',threading.RLock())
     def prepare_capture(self,refresh=False):
         return self.capture_worker().request('prepare',refresh=bool(refresh))
+
+    def prepare_open_capture(self):
+        if not self.capture_target_info().get('foreground'):return
+        self.prepare_capture()
+        with self._page_guard():
+            page=self.page_worker
+            if self.page_model_ready and page is not None and page.process.poll() is None and self.capture_target_info().get('foreground'):
+                self._connect_page_capture()
+
     def capture_target_info(self,connect=False,refresh=False):
         import domain_runtime as SR
         import ctypes,ctypes.wintypes as wt
@@ -358,6 +445,10 @@ class ScanService:
                   'foreground':not bool(error) and SR.SA.u.GetForegroundWindow()==w,
                   'connected':bound,'capture_health':health,
                   'text':'当前捕获窗口：%s｜%s｜PID %s｜HWND %s｜%s'%(title.value,SR._pid_exe_name(w),pid.value,w,error or ('已连接' if bound else '待连接'))}
+            if not error and not SR.SA.u.IsIconic(w):
+                width,height=rect.right-rect.left,rect.bottom-rect.top
+                if 0<min(width*9,height*16)<17280:
+                    info['resolution_warning']='捕获分辨率 %d×%d 偏低，可能识别错误。建议使用 1920×1080 或更高。'%(width,height)
         self.capture_target_state=info
         return info
     def capture_single(self):
@@ -368,7 +459,17 @@ class ScanService:
         result=self.capture_worker().request('capture')
         result['started_at_ns']=started_at_ns
         return result
-    def prepare_recognizers(self):
+
+    def capture_single_before(self,pressed_mono_ns,deadline_ns):
+        from single_capture import CAPTURE_EXPIRED, CaptureWindowMissed
+        if time.monotonic_ns()>=deadline_ns:raise CaptureWindowMissed(CAPTURE_EXPIRED)
+        started_at_ns=time.time_ns()-(time.monotonic_ns()-pressed_mono_ns)
+        self.template_activity(True)
+        return self.capture_worker().request('capture',pressed_mono_ns=pressed_mono_ns,deadline_ns=deadline_ns,
+                                             started_at_ns=started_at_ns,defer_save=True)
+    def prepare_models(self):
+        self.prepare_recognizers(connect_game=False)
+    def prepare_recognizers(self,connect_game=True):
         self.template_activity(True)
         while not self.recognizer_lock.acquire(timeout=.1):
             self.check_cancel()
@@ -376,14 +477,17 @@ class ScanService:
             self.check_cancel()
             self.prepare_page_worker();self._prepare_recognizers()
             self.check_cancel()
-            # Connection belongs to Start preparation, never the first hotkey.
-            request=self.page_worker.submit(None,{},args=['connect-game'])
-            for raw in request.stdout:
-                from log_view import scan_message
-                message=scan_message(raw.decode('utf-8','replace'))
-                if message:self.hotkeys.log(message)
-            if request.wait()!=0:raise RuntimeError('游戏窗口连接准备失败；尚未操作游戏')
+            if not connect_game:return
+            self._connect_page_capture()
         finally:self.recognizer_lock.release()
+
+    def _connect_page_capture(self):
+        request=self.page_worker.submit(None,{},args=['connect-game'])
+        from log_view import scan_message
+        for raw in request.stdout:
+            message=scan_message(raw.decode('utf-8','replace'))
+            if message:self.hotkeys.log(message)
+        if request.wait()!=0:raise RuntimeError('游戏窗口连接准备失败；尚未操作游戏')
     def prepare_initial_model(self):
         # Optional app-open preload: one page engine, no workbook or game input.
         self.initial_preload_running=True
@@ -391,6 +495,7 @@ class ScanService:
         try:
             with self.recognizer_lock:
                 if self.initial_preload_stopped:return
+                if self.page_model_ready and self.page_worker is not None and self.page_worker.process.poll() is None:return
                 from resource_guard import can_load_model
                 if not can_load_model():
                     message='内存不足，尚未加载识别模型，扫描识别不可用。应用可继续使用；释放内存后可重新启动扫描。'
@@ -434,73 +539,126 @@ class ScanService:
     def _prepare_recognizers(self):
         from queue import Queue
         from user_controls import read_settings
-        from single_worker import SingleWorker
+        from resource_guard import can_load_model
         count=int(read_settings(self.hotkeys.SETTINGS_PATH).get('single_workers',2))
         if count not in range(1,5):raise ValueError('单卡并行数须为1至4')
-        if self.single_pool is not None and getattr(self,'single_requested',None)==count and all(w.process.poll() is None for w in self.single_pool_workers):return
-        for worker in self.single_pool_workers:
-            if worker is not self.page_worker:worker.close()
-        self.single_pool=None;self.single_pool_workers=[]
         self.single_requested=count
-        from resource_guard import worker_limit,can_load_model
-        requested=count
         self.prepare_page_worker()
-        if not self.page_model_ready and not can_load_model():raise RuntimeError('可用内存或系统提交额度不足，尚未加载模型；请释放资源后重试')
-        request=self.page_worker.submit(None,{'DOMAIN_CANCEL_FILE':str(self.cancel_file)},args=['preload'])
-        from log_view import scan_message
-        for raw in request.stdout:
-            message=scan_message(raw.decode('utf-8','replace'))
-            if message:self.hotkeys.log(message)
-            if message and ('暂停等待' in message or '资源恢复' in message):self.report_progress(message)
-        if request.wait()!=0:raise RuntimeError('一路识别模型尚未准备好；请检查内存提示后重试')
-        self.page_model_ready=True
-        self.single_pool_workers=[]
-        try:count=worker_limit(requested)
-        except RuntimeError as error:
-            if '可用内存或系统提交额度不足' not in str(error):raise
-            count=0
-        if 0<count<requested:
-            message='内存余量不足以启用%d路，已自动降为%d路；任务将继续。'%(requested,count)
-            self.hotkeys.log(message);self.report_progress(message)
-        env=dict(os.environ,DOMAIN_EVENTS='',DOMAIN_CANCEL_FILE=str(self.cancel_file),DOMAIN_SINGLE_ORT_THREADS='2')
-        def start(_):
-            import uuid,secrets
-            endpoint={'address':r'\\.\pipe\DomainScanner_'+uuid.uuid4().hex,'key':secrets.token_hex(32)}
-            child_env=dict(env,DOMAIN_ACTOR_ADDRESS=endpoint['address'],DOMAIN_ACTOR_KEY=endpoint['key'])
-            child=subprocess.Popen(command('single-server'),cwd=BASE,env=child_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW,startupinfo=child_startup())
-            worker=SingleWorker(child)
-            worker.endpoint=endpoint
-            try:
-                request=worker.submit(None,env,warm=True)
-                from log_view import scan_message
-                for raw in request.stdout:
-                    message=scan_message(raw.decode('utf-8','replace'))
-                    if message:self.hotkeys.log(message)
-                    if message and ('暂停等待' in message or '资源恢复' in message):self.report_progress(message)
-                if request.wait()!=0:raise RuntimeError('单卡模型预热失败')
-                return worker
-            except Exception:worker.close();raise
-        try:
-            for i in range(count):
-                self.check_cancel()
-                if i and not can_load_model():break
-                self.report_progress('加载识别模型 %d/%d；资源不足时会等待，可中止…'%(i+1,count))
-                self.single_pool_workers.append(start(i))
-        except Exception:
+        if not self.page_model_ready:
+            if not can_load_model():raise RuntimeError('可用内存或系统提交额度不足，尚未加载模型；请释放资源后重试')
+            request=self.page_worker.submit(None,{'DOMAIN_CANCEL_FILE':str(self.cancel_file)},args=['preload'])
+            from log_view import scan_message
+            for raw in request.stdout:
+                message=scan_message(raw.decode('utf-8','replace'))
+                if message:self.hotkeys.log(message)
+            if request.wait()!=0:raise RuntimeError('一路识别模型尚未准备好；请检查内存提示后重试')
+            self.page_model_ready=True
+        timer=self.pool_retention_timer
+        if timer is not None:
+            timer.cancel()
+            self.pool_retention_timer=None
+            retained=[w for w in self.single_pool_workers if w is not self.page_worker and
+                      hasattr(w,'endpoint') and w.process.poll() is None]
             for worker in self.single_pool_workers:
-                if worker is not self.page_worker:worker.close()
-            self.single_pool_workers=[];raise
-        if not self.single_pool_workers:
-            self.single_pool_workers=[self.page_worker]
-            self.hotkeys.log('内存余量不足以增加模型，已自动降为1路复用常驻模型；任务将继续。')
-        self.single_pool=Queue()
-        for worker in self.single_pool_workers:self.single_pool.put(worker)
-        if len(self.single_pool_workers)<requested:
-            message='内存余量不足以启用%d路，已自动降为%d路；任务将继续。'%(requested,len(self.single_pool_workers))
-            self.hotkeys.log(message);self.report_progress(message)
-        self.hotkeys.log('识别池已预热：请求%d路，实际%d路。'%(requested,len(self.single_pool_workers)))
+                if hasattr(worker,'endpoint') and worker not in retained[:count]:worker.close()
+            if retained[:count]:self.hotkeys.log('复用已预热的独立识别进程：%d路。'%len(retained[:count]))
+            self.single_pool_workers=retained[:count]
+            self.single_pool=None
+        if self.single_pool is None or (len(self.single_pool_workers)==1 and
+                                       not hasattr(self.single_pool_workers[0],'endpoint') and
+                                       self.single_pool_workers[0] is not self.page_worker):
+            self.single_pool=Queue()
+            if not self.single_pool_workers or not hasattr(self.single_pool_workers[0],'endpoint'):
+                self.single_pool_workers=[self.page_worker]
+            for worker in self.single_pool_workers:self.single_pool.put(worker)
+
+    def _warm_independent_worker(self,marker):
+        import secrets
+        import uuid
+        from single_worker import SingleWorker
+        endpoint={'address':r'\\.\pipe\DomainScanner_'+uuid.uuid4().hex,'key':secrets.token_hex(32)}
+        env=dict(os.environ,DOMAIN_EVENTS='',DOMAIN_CANCEL_FILE=str(marker),DOMAIN_SINGLE_ORT_THREADS='2',
+                 DOMAIN_ACTOR_ADDRESS=endpoint['address'],DOMAIN_ACTOR_KEY=endpoint['key'])
+        child=subprocess.Popen(command('single-server'),cwd=BASE,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW,startupinfo=child_startup())
+        worker=SingleWorker(child)
+        worker.endpoint=endpoint
+        try:
+            request=worker.submit(None,env,warm=True)
+            list(request.stdout)
+            if request.wait()!=0:raise RuntimeError('独立识别模型预热失败')
+            return worker
+        except Exception:
+            worker.close()
+            raise
+
+    def recognizer_count(self):
+        return len(self.single_pool_workers) or int(self.page_model_ready)
+
+    def install_recognizer(self,worker):
+        # The session reserves the idle boundary before calling this method.
+        pool=self.single_pool
+        with pool.mutex:
+            if self.single_pool_workers==[self.page_worker]:
+                pool.queue.remove(self.page_worker)
+                self.single_pool_workers.clear()
+            self.single_pool_workers.append(worker)
+        pool.put(worker)
+
+    def warm_extra_recognizers(self,signal,idle,publish,report):
+        from resource_guard import worker_limit
+        marker=self.cancel_file.with_suffix('.pool-warm-%d' % time.time_ns())
+        requested=self.single_requested
+        prepared=0
+        reason=''
+        with self.recognizer_lock:
+            if signal.is_set():return
+            marker.unlink(missing_ok=True)
+            self.pool_warm_marker=marker
+        try:
+            while not signal.is_set():
+                if not idle():
+                    signal.wait(.1)
+                    continue
+                current=sum(w is not self.page_worker for w in self.single_pool_workers)
+                if current>=requested:break
+                try:
+                    if worker_limit(1)<1:break
+                except RuntimeError:
+                    reason='内存预算限制';break
+                report(self.recognizer_count(),requested,'正在后台加载识别模型')
+                worker=self._warm_independent_worker(marker)
+                try:
+                    while not signal.is_set():
+                        if publish(worker):
+                            worker=None
+                            prepared+=1
+                            break
+                        signal.wait(.1)
+                finally:
+                    if worker is not None:worker.close()
+        except Exception as error:
+            reason='额外识别模型加载失败'
+            if not signal.is_set():self.hotkeys.log(reason+'：'+str(error))
+        finally:
+            if not signal.is_set():
+                actual=self.recognizer_count()
+                self.hotkeys.log('识别池就绪：请求%d路，实际%d路，新增%d路%s。'%
+                    (requested,actual,prepared,'，'+reason if reason else ''))
+                report(actual,requested,reason)
+            with self.recognizer_lock:
+                if getattr(self,'pool_warm_marker',None) is marker:self.pool_warm_marker=None
+                marker.unlink(missing_ok=True)
+
+    def cancel_recognizer_warmup(self):
+        marker=getattr(self,'pool_warm_marker',None)
+        if marker is not None:marker.touch()
+
     def release_recognizers(self):
         with self.recognizer_lock:
+            if self.pool_retention_timer is not None:
+                self.pool_retention_timer.cancel()
+                self.pool_retention_timer=None
             from concurrent.futures import ThreadPoolExecutor
             if self.single_pool_workers:
                 with ThreadPoolExecutor(max_workers=len(self.single_pool_workers)) as pool:list(pool.map(lambda w:w.close(),[w for w in self.single_pool_workers if w is not self.page_worker]))
@@ -515,18 +673,20 @@ class ScanService:
         else:
             folder=OUTPUT/'internal_复现'/('快捷键单卡_%d'%time.time_ns());folder.mkdir(parents=True)
             snapshot=folder/'原始详情.png';Image.fromarray(raw).save(snapshot)
-        self.check_cancel()
+        self.check_single_cancel()
         if self.single_pool is None:self.prepare_recognizers()
         started=time.perf_counter();worker=self.single_pool.get();lines=[];rc=1
         try:
-            self.check_cancel()
+            self.check_single_cancel()
             from contextlib import nullcontext
             with self._page_guard() if worker is self.page_worker else nullcontext():
-                request=worker.submit(str(snapshot),{'DOMAIN_EVENTS':'','DOMAIN_CANCEL_FILE':str(self.cancel_file)},output=str(folder))
+                request=worker.submit(str(snapshot),{'DOMAIN_EVENTS':'','DOMAIN_CANCEL_FILE':str(self.single_cancel_file)},output=str(folder))
                 lines=list(request.stdout);rc=request.wait()
         except Exception as error:lines.append((str(error)+'\n').encode('utf-8'))
         finally:self.single_pool.put(worker)
-        return {'snapshot':str(snapshot),'export':str(folder/'export.json'),'rc':rc,'lines':lines,'seconds':round(time.perf_counter()-started,3),'started_at_ns':started_at_ns,'ended_at_ns':time.time_ns()}
+        from output_layout import archive_task_result
+        export=archive_task_result(folder) if rc==0 else folder/'export.json'
+        return {'snapshot':str(snapshot),'export':str(export),'rc':rc,'lines':lines,'seconds':round(time.perf_counter()-started,3),'started_at_ns':started_at_ns,'ended_at_ns':time.time_ns()}
     def process_single(self,raw):
         from PIL import Image
         prepared=raw if isinstance(raw,dict) and 'rc' in raw else None
@@ -541,12 +701,12 @@ class ScanService:
         # a delayed workbook-completion sound must not impersonate a new shot.
         if rc:raise RuntimeError('单卡识别失败，原始截图和诊断已保存')
         origin=(prepared.get('started_at_ns')/1e9 if prepared and prepared.get('started_at_ns') else snapshot.stat().st_mtime)
-        saved=self.hotkeys.keep_copy(origin,folder=snapshot.parent,source=snapshot.parent/'export.json')
+        saved=self.hotkeys.keep_copy(origin,folder=snapshot.parent,source=snapshot.parent/(snapshot.parent.name+'.json'))
         self.hotkeys.log('单卡已保存：'+str(saved))
     def process_single_batch(self,prepared):
         """The capture queue owns ordering; ACK comes only after one durable save."""
         self.template_activity(True)
-        self.check_cancel();self.ensure_consumer();scans=[];errors=[];payloads=[]
+        self.check_single_cancel();self.ensure_consumer();scans=[];errors=[];payloads=[]
         started=time.perf_counter()
         for raw in prepared:
             folder=Path(raw['snapshot']).parent
@@ -558,6 +718,9 @@ class ScanService:
         from output_layout import mark
         if os.environ.get('DOMAIN_TASK_RECORDING')=='1':
             for raw in prepared:mark(Path(raw['snapshot']).parent,category='task_archive',save_pending=True,writer_pid=self.consumer.pid,writer_started_ns=time.time_ns())
+        for raw,scan in zip(prepared,scans):
+            scan['ended_at_ns']=scan['ended_at_ns'] or time.time_ns()
+            self.record_workbook_end(Path(raw['snapshot']).parent,scan['ended_at_ns'])
         token=str(time.time_ns());self.append_event(dict(event='single_batch',id=token,scans=scans))
         self.wait_saved(token,'single_batch',timeout=max(30,len(scans)*3))
         if os.environ.get('DOMAIN_TASK_RECORDING')=='1':
@@ -569,6 +732,15 @@ class ScanService:
             self.hotkeys.keep_copy(origin,folder=Path(raw['snapshot']).parent,source=raw['export'])
         self.hotkeys.log('批量保存单卡%d件（含失败%d件），已确认Excel写入，耗时%.2f秒。'%(len(scans),sum(e is not None for e in errors),time.perf_counter()-started))
         return errors
+    @staticmethod
+    def record_workbook_end(folder,ended_at_ns):
+        if folder and (Path(folder)/'任务归属.json').is_file():
+            from output_layout import mark
+            try:
+                mark(Path(folder),workbook_ended_ns=ended_at_ns)
+            except (OSError, ValueError) as error:
+                print('未能保存批次结束时间：'+str(error),file=sys.stderr)
+
     def append_event(self,event):
         with self.journal.open('a',encoding='utf-8') as f:f.write(json.dumps(event,ensure_ascii=False)+'\n')
     def consumer_failure(self,default):
@@ -649,12 +821,18 @@ class ScanService:
                     try:request.close()
                     except Exception as close_error:recovery_errors.append(str(close_error))
                     if request is self.page_worker:
-                        self.page_worker=None;self.page_model_ready=False;self.single_pool=None
+                        if request in self.single_pool_workers:self.single_pool=None
+                        self.page_worker=None;self.page_model_ready=False
                     if request is self.single_worker:self.single_worker=None
+            if lifecycle.get('staged'):
+                try:self.publish_page_workbook(lifecycle)
+                except Exception as save_error:recovery_errors.append('写表未确认：'+str(save_error))
             if lifecycle['began'] and not lifecycle['terminal']:
-                failure={'event':'failed','id':str(time.time_ns()),'session':lifecycle['session'],
-                         'error':str(error),'queued_at_ns':time.time_ns()}
+                ended_at_ns=time.time_ns()
+                failure={'event':'failed','id':str(ended_at_ns),'session':lifecycle['session'],
+                         'error':str(error),'queued_at_ns':ended_at_ns,'ended_at_ns':ended_at_ns}
                 try:
+                    self.record_workbook_end(self.last_task_folder(),ended_at_ns)
                     self.append_event(failure)
                     self.wait_saved(failure['id'],'failed')
                     if self.last_task_folder():
@@ -737,22 +915,31 @@ class ScanService:
         env['DOMAIN_OCR_WORKERS']=str(workers)
         env['DOMAIN_ROW_INFO']='1' if read_settings(self.hotkeys.SETTINGS_PATH).get('row_info',False) else '0'
         if not single and not check:
-            env['DOMAIN_OCR_POOL']=json.dumps([w.endpoint for w in self.single_pool_workers if hasattr(w,'endpoint')])
+            with self.single_pool.mutex:
+                idle_workers=set(self.single_pool.queue)
+            workers=sorted(self.single_pool_workers,key=lambda worker:worker not in idle_workers)
+            env['DOMAIN_OCR_POOL']=json.dumps([worker.endpoint for worker in workers if hasattr(worker,'endpoint')])
         if not check:
             self.report_progress('正在提交扫描任务；工作簿在后台追加…')
+            barrier=getattr(getattr(self,'_output_context',None),'page_workbook_barrier',None) if not single else None
             # Start already prepared the workbook. Don't probe a potentially
             # busy COM consumer before each scan; ordered journal is the queue.
             # Completion still waits for a real save ACK and reports failures.
-            if self.consumer is None or self.consumer.poll() is not None:self.ensure_consumer()
+            if barrier is None and (self.consumer is None or self.consumer.poll() is not None):self.ensure_consumer()
             timings['工作簿检查']=round(time.perf_counter()-clock,3);clock=time.perf_counter()
             self.check_cancel()
             session=time.strftime('%Y%m%d_%H%M%S')+'_%d'%time.time_ns()
             lifecycle['session']=session
-            if task:
+            if task and barrier is None:
                 from output_layout import mark
                 mark(task,save_pending=True,writer_pid=self.consumer.pid,writer_started_ns=time.time_ns())
-            if not atomic_single:
-                self.append_event({'event':'begin','session':session,'started_at_ns':requested or time.time_ns()})
+            begin={'event':'begin','session':session,'started_at_ns':requested or time.time_ns()}
+            if barrier is not None:
+                staged=(task or self.journal.parent)/('页面写表_'+session+'.jsonl')
+                staged.touch(exist_ok=False)
+                lifecycle['staged']=dict(queue=barrier,path=staged,begin=begin,offset=0)
+            elif not atomic_single:
+                self.append_event(begin)
                 lifecycle['began']=True
                 deadline=time.monotonic()+20
                 started_marker=Path(str(self.journal)+'.started')
@@ -766,7 +953,7 @@ class ScanService:
                     if not single:pass
                     else:
                         raise RuntimeError('工作簿开始标记尚未保存，未操作游戏；请确认Excel/WPS未忙碌或锁定文件。')
-            env['DOMAIN_EVENTS']=str(self.journal)
+            env['DOMAIN_EVENTS']=str(staged if barrier is not None else self.journal)
             env['DOMAIN_SCAN_SESSION']=session
             timings['开始标记保存' if single else '开始标记提交（保存与页面只读检查重叠）']=round(time.perf_counter()-clock,3);clock=time.perf_counter()
         if self.cancel_file.exists():
@@ -798,10 +985,21 @@ class ScanService:
         self._notice_timing.task['diagnostic']=str(diagnostic)
         self.hotkeys.log('开始页面检查。' if check else '后台识别已截取的单卡。' if single and snapshot else '开始单卡扫描。' if single else '开始独立横排拼图；不点开物品。' if montage else '开始扫描；所选星级：'+','.join(map(str,grades)))
         self.report_progress('正在检查游戏页面并定位横排…' if not single else '正在处理单卡识别结果…')
+        in_traceback=False
+        next_publication=0
         with diagnostic.open('w',encoding='utf-8',buffering=1) as trace:
             for raw in p.stdout:
                 line=clean_line(raw.decode('utf-8','replace'))
                 trace.write(line+'\n');n+=1
+                if lifecycle.get('staged') and time.monotonic()>=next_publication:
+                    self.publish_page_workbook(lifecycle,final=False)
+                    next_publication=time.monotonic()+.1
+                if line=='Traceback (most recent call last):':
+                    in_traceback=True
+                    continue
+                if in_traceback:
+                    if raw.startswith((b' ',b'\t')) or not line:continue
+                    in_traceback=False
                 if line.startswith('@@DOMAIN_ACTION@@'):
                     try:
                         text=line[len('@@DOMAIN_ACTION@@'):]
@@ -826,8 +1024,10 @@ class ScanService:
             self.report_progress('正在收尾：核对结果、插入拼图并确认工作簿保存…')
             event={'event':'failed'};export=task_export
             if rc==0 and export.exists() and export.stat().st_mtime>=started-1:
+                if task and export.name=='export.json':
+                    from output_layout import archive_task_result
+                    export=archive_task_result(task)
                 event={'event':'complete','items':json.loads(export.read_text(encoding='utf-8'))['获得物']}
-                if task:Path(self.hotkeys.EXPORT).write_bytes(export.read_bytes())
             else:rc=rc or 1
             if atomic_single:
                 event['event']='single_complete' if event['event']=='complete' else 'single_failed'
@@ -836,6 +1036,10 @@ class ScanService:
             event['ended_at_ns']=(prepared.get('ended_at_ns') if atomic_single and prepared else None) or time.time_ns()
             event['id']=str(time.time_ns())
             event['queued_at_ns']=time.time_ns()
+            self.publish_page_workbook(lifecycle)
+            if event['event'] in ('complete','single_complete') and task:
+                Path(self.hotkeys.EXPORT).write_bytes(export.read_bytes())
+            self.record_workbook_end(task,event['ended_at_ns'])
             self.append_event(event)
             lifecycle['terminal']=True
             with diagnostic.open('a',encoding='utf-8') as trace:
@@ -897,7 +1101,7 @@ class ScanService:
         self.connection_info=None
         raise RuntimeError(self.consumer_failure('未确认本趟Excel保存成功；JSON识别结果独立保留，请查看 '+str(self.journal.with_suffix('.表格.log'))))
 
-    def close(self,keep_page=False):
+    def close(self,keep_page=False,keep_workers=False):
         errors=[]
         def cleanup(function):
             try:function()
@@ -935,9 +1139,28 @@ class ScanService:
             with self.recognizer_lock:
                 if self.page_worker is not None:cleanup(self.page_worker.close);self.page_worker=None
                 self.page_model_ready=False
-        for worker in self.single_pool_workers:
-            if worker is not page:cleanup(worker.close)
-        self.single_pool_workers=[];self.single_pool=None
+        retained=sum(hasattr(w,'endpoint') and w.process.poll() is None for w in self.single_pool_workers)
+        if keep_page and keep_workers and not errors and retained:
+            import threading
+            def expire():
+                with self.recognizer_lock:
+                    if self.pool_retention_timer is timer:
+                        self.release_recognizers()
+                        self.hotkeys.log('预热保留到期，已释放%d路独立识别进程。'%retained)
+            with self.recognizer_lock:
+                if self.pool_retention_timer is not None:self.pool_retention_timer.cancel()
+                timer=threading.Timer(60,expire)
+                timer.daemon=True
+                self.pool_retention_timer=timer
+                timer.start()
+            self.hotkeys.log('已停止监听，保留%d路独立识别进程，最多60秒。'%retained)
+        else:
+            if self.pool_retention_timer is not None:
+                self.pool_retention_timer.cancel()
+                self.pool_retention_timer=None
+            for worker in self.single_pool_workers:
+                if worker is not page:cleanup(worker.close)
+            self.single_pool_workers=[];self.single_pool=None
         if self.single_worker is not None:
             cleanup(self.single_worker.close);self.single_worker=None
         self.connection_info=None
@@ -973,6 +1196,9 @@ _instrument_class(ScanService,['run','prepare_recognizers','prepare_page_worker'
     'capture_single','recognize_single','process_single_batch'])
 
 def main():
+    if len(sys.argv) == 1 or sys.argv[1:] == ['--gui-smoke']:
+        from runtime_initialization import initialize_runtime
+        initialize_runtime(BASE, RESOURCE)
     if len(sys.argv)>1 and sys.argv[1]=='template-learner':
         from template_learning import learn_pending
         return learn_pending(RESOURCE)
@@ -1135,13 +1361,15 @@ def main():
     original_keep_copy=hotkeys.keep_copy
     def owned_keep_copy(t0,folder=None,source=None):
         folder=folder or service.last_task_folder()
+        if source is None and folder:
+            source=next((p for p in (Path(folder)/(Path(folder).name+'.json'),Path(folder)/'export.json') if p.is_file()),None)
         return original_keep_copy(t0,folder=folder,source=source) if folder else original_keep_copy(t0)
     hotkeys.keep_copy=owned_keep_copy
     original_notify=hotkeys.notify
     def measured_notify(success,enabled,kind=None):
         from scan_timing import span
         with span('提示音API'):original_notify(success,enabled,kind)
-        if kind!='capture':service.record_notice(success,enabled)
+        if kind not in ('capture','rejected'):service.record_notice(success,enabled)
     hotkeys.notify=measured_notify
     from scan_timing import timed
     hotkeys.keep_copy=timed('完成后JSON独立归档')(hotkeys.keep_copy)
@@ -1171,7 +1399,8 @@ if __name__=='__main__':
         except (OSError,ValueError):pass
         if len(sys.argv)<2:
             import ctypes
+            from log_view import error_summary
             message=('磁盘已满，程序无法继续保存。请清理目标盘及系统临时目录所在盘；未确认保存的任务不能视为完成。'
-                if any(word in error.lower() for word in ('磁盘已满','disk full','no space left')) else '扫描器遇到错误：'+str(failure))
+                if any(word in error.lower() for word in ('磁盘已满','disk full','no space left')) else '扫描器遇到错误：'+error_summary(str(failure)))
             ctypes.windll.user32.MessageBoxW(None,message,'原神副本扫描器 · 运行失败',0x10)
         raise SystemExit(1)

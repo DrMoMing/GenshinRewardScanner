@@ -14,9 +14,74 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import Future, wait
 from pathlib import Path
+import shutil
+from single_capture import CAPTURE_EXPIRED, CAPTURE_RECOVERING, SAVE_QUEUE_FULL, CaptureWindowMissed, PendingCapture
 
 PREFIX='@@DOMAIN_CAPTURE@@'
+MIB=1024**2
+MAX_SAVE_FRAMES=12
+MAX_SAVE_BYTES=256*MIB
+
+def frame_memory_budget(snapshot):
+    physical=snapshot['available']-max(2048*MIB,snapshot['total']*15//100)
+    commit=snapshot['limit']-snapshot['commit']-max(2048*MIB,snapshot['limit']*15//100)
+    return max(0,min(MAX_SAVE_BYTES,min(physical,commit)//8))
+
+class FrameSaveQueue:
+    def __init__(self,output,send):
+        self.output=output
+        self.send=send
+        self.lock=threading.Lock()
+        self.frames=self.bytes=0
+        self.tasks=queue.Queue()
+        self.thread=threading.Thread(target=self.run,daemon=True,name='capture-png')
+        self.thread.start()
+
+    def submit(self,raw,info,request,ready):
+        from resource_guard import memory_status
+        size=raw.nbytes
+        with self.lock:
+            if (self.frames>=MAX_SAVE_FRAMES or
+                    self.bytes+size>frame_memory_budget(memory_status())):
+                raise CaptureWindowMissed(SAVE_QUEUE_FULL)
+            if shutil.disk_usage(self.output).free<self.bytes+size+16*MIB:
+                raise RuntimeError('输出盘空间不足，本次单卡未保存；释放空间后请重新按键')
+            self.frames+=1;self.bytes+=size
+            try:
+                ready(request['token'])
+                self.tasks.put((raw,info,request))
+            except BaseException:
+                self.frames-=1;self.bytes-=size
+                raise
+
+    def run(self):
+        while True:
+            item=self.tasks.get()
+            if item is None:return
+            raw,info,request=item
+            size=raw.nbytes
+            try:
+                value=save_capture(self.output,raw,info,request)
+                result=dict(ok=True,value=value)
+            except Exception as error:
+                result=dict(ok=False,error=capture_error_text(error))
+            finally:
+                del raw,item
+                with self.lock:
+                    self.frames-=1;self.bytes-=size
+            try:self.send(dict(kind='saved',token=request['token'],**result))
+            except (BrokenPipeError,OSError):return
+
+    def close(self):
+        self.tasks.put(None)
+        self.thread.join()
+
+def capture_error_text(error):
+    if isinstance(error,OSError) and (error.errno==28 or getattr(error,'winerror',None) in (39,112)):
+        return '输出盘空间不足，本次单卡未完整保存；释放空间后请重新按键'
+    return str(error)
 
 class _ProcessJob:
     """Windows kill-on-close job owns bootloader/launcher descendants too."""
@@ -62,7 +127,8 @@ class CaptureWorker:
         self.stall_timeout=stall_timeout;self.process=None;self.closed=False
         self.serial=threading.Lock();self.state_lock=threading.RLock();self.job=None;self.job_error=None
         self.state={};self.last_heartbeat=0.;self.progress_received=0.
-        self.tail=deque(maxlen=32);self.reply=None;self.token=None;self.generation=0
+        self.tail=deque(maxlen=32);self.reply=None;self.token=None;self.frame_token=None;self.generation=0
+        self.saves={};self.retiring=None
     @property
     def info(self):
         with self.state_lock:
@@ -80,7 +146,10 @@ class CaptureWorker:
     def _start(self):
         with self.state_lock:
             if self.closed:raise RuntimeError('截图服务已关闭')
+            if self.process is not None and self.retiring is self.process:
+                raise CaptureWindowMissed(CAPTURE_RECOVERING)
             if self.process and self.process.poll() is None:return
+            if self.process:self._fail_saves(self.process)
             if self.job:self.job.close();self.job=None
             options={}
             if os.name=='nt':options['creationflags']=subprocess.CREATE_NO_WINDOW
@@ -119,12 +188,22 @@ class CaptureWorker:
                         if state.get('progress',0)<self.state.get('progress',0):continue
                         if state.get('progress')!=self.state.get('progress'):self.progress_received=now
                         self.state=state
+                    elif message.get('kind')=='frame' and message.get('token')==self.token:
+                        self.frame_token=self.token
+                        if self.token in self.saves and self.reply:
+                            self.reply.put_nowait(message)
+                    elif message.get('kind')=='saved':
+                        saved=self.saves.pop(message.get('token'),None)
+                        if saved:
+                            if message['ok']:saved.set_result(message['value'])
+                            else:saved.set_exception(CaptureRequestError(message['error']))
                     elif message.get('kind')=='result' and message.get('token')==self.token and self.reply:
                         self.state=message.get('state',self.state)
                         try:self.reply.put_nowait(message)
                         except queue.Full:pass
         except (OSError,ValueError):pass
         finally:
+            self._fail_saves(child)
             try:child.stdout.close()
             except (OSError,ValueError):pass
     def _terminate(self,child):
@@ -140,18 +219,58 @@ class CaptureWorker:
             except (OSError,ValueError):pass
         with self.state_lock:
             if self.process is child:self.process=None;self.state=dict(self.state,connected=False)
+            if self.retiring is child:self.retiring=None
+    def _fail_saves(self,child):
+        with self.state_lock:
+            if self.process is not child:return
+            saves=list(self.saves.values());self.saves.clear()
+        for saved in saves:
+            saved.set_exception(CaptureRequestError('截图服务已退出，未确认这张单卡保存。请重新截图。'))
+
+    def _saved_result(self,child,saved):
+        try:return saved.result(timeout=60)
+        except TimeoutError:
+            with self.serial:
+                if self.process is child:
+                    self._fail_saves(child)
+                    self._terminate(child)
+            raise CaptureRequestError('存图连续 60 秒未完成，截图服务已重置。请重新截图。') from None
+
+    def _retire_after_saves(self,child,token):
+        with self.state_lock:
+            pending=[future for key,future in self.saves.items() if key!=token]
+            if pending:self.retiring=child
+        if not pending:
+            self._terminate(child)
+            return
+        def retire():
+            wait(pending,timeout=60)
+            with self.serial:
+                if self.process is child:
+                    self._fail_saves(child)
+                    self._terminate(child)
+        threading.Thread(target=retire,daemon=True,name='capture-recovery').start()
+
     def request(self,op,**values):
         with self.serial:
+            if op!='capture' and self.retiring is not None:return False
             self._start();child=self.process;started=time.monotonic()
             token=uuid.uuid4().hex;reply=queue.Queue(maxsize=1)
-            with self.state_lock:self.token=token;self.reply=reply;self.progress_received=started
-            self._log('capture_request',op=op,pid=child.pid,token=token)
+            saved=Future() if values.get('defer_save') else None
+            accepted=False
+            with self.state_lock:
+                self.token=token;self.reply=reply;self.progress_received=started
+                if saved is not None:self.saves[token]=saved
+            deadline=values.get('deadline_ns')
+            self._log('capture_request',op=op,pid=child.pid,token=token,pressed_mono_ns=values.get('pressed_mono_ns'))
             try:
                 child.stdin.write((json.dumps(dict(token=token,op=op,**values))+'\n').encode());child.stdin.flush()
                 while True:
-                    try:result=reply.get(timeout=.05);break
+                    try:result=reply.get(timeout=.02 if deadline is not None else .05);break
                     except queue.Empty:pass
                     now=time.monotonic();state=self.info
+                    if deadline is not None and time.monotonic_ns()>deadline+50_000_000 and self.frame_token!=token:
+                        raise CaptureWindowMissed(CAPTURE_EXPIRED)
                     # Startup/connection and PNG encoding need different budgets
                     # from native acquisition; heartbeat alone extends none.
                     budget=15. if op=='prepare' or state.get('stage') in ('starting','connecting') else self.stall_timeout
@@ -162,6 +281,9 @@ class CaptureWorker:
                     if stale>budget or now-started>30:
                         self._log('capture_stalled',op=op,pid=child.pid,state=state,tail=list(self.tail))
                         raise RuntimeError('截图工作未推进（阶段：%s），已终止独立截图进程；本次未截图，下次请求将重建'%state.get('stage','启动'))
+                if result.get('kind')=='frame':
+                    accepted=True
+                    return PendingCapture(lambda:self._saved_result(child,saved))
                 self._log('capture_result',op=op,pid=child.pid,ok=result['ok'],error=result.get('error'),state=result.get('state'))
                 if not result['ok']:raise CaptureRequestError(result.get('error','截图失败'))
                 return result.get('value')
@@ -169,14 +291,21 @@ class CaptureWorker:
                 # Normal no-frame failure: native patch closed the session. Keep
                 # this responsive process and let next request reconnect.
                 raise
+            except CaptureWindowMissed:
+                self._log('capture_expired',op=op,pid=child.pid,state=self.info)
+                self._retire_after_saves(child,token)
+                raise
             except Exception as error:
                 self._log('capture_error',op=op,pid=child.pid,error=str(error),state=self.info,tail=list(self.tail))
+                self._fail_saves(child)
                 self._terminate(child);raise
             finally:
                 with self.state_lock:
                     if self.token==token:self.token=None;self.reply=None
+                    if not accepted:self.saves.pop(token,None)
     def close(self):
         self.closed=True
+        self._fail_saves(self.process)
         self._terminate(self.process)
 
 class CaptureRequestError(RuntimeError):pass
@@ -185,6 +314,7 @@ class CaptureProgress:
     def __init__(self):
         self.lock=threading.RLock();self.data={'stage':'starting','progress':0,'connected':False}
         self.callback=None;self.library=None;self.native_events=deque(maxlen=16)
+        self.frame_ready=lambda _:None
     def mark(self,stage,**values):
         with self.lock:
             self.data.update(stage=stage,progress=self.data['progress']+1,progress_ns=time.monotonic_ns(),**values)
@@ -198,7 +328,7 @@ class CaptureProgress:
         try:setter=library.DomainScannerSetCaptureObserver
         except AttributeError:
             self.mark('idle',native_monitor=False);return False
-        names={1:'initializing',2:'waiting_frame',3:'frame_received',4:'readback',5:'frame_complete',6:'no_frame',7:'released',8:'screen_acquire'}
+        names={1:'initializing',2:'waiting_frame',3:'frame_received',4:'readback',5:'frame_complete',6:'no_frame',7:'released',8:'mapped_pixels'}
         def observe(stage,frame_time):
             if stage==10:
                 # Producer may still deliver while consumer/readback is stuck.
@@ -209,7 +339,6 @@ class CaptureProgress:
                 return
             values={}
             if stage in (1,2,3,6):values['source']='FramePool'
-            elif stage==8:values['source']='ScreenDC'
             if stage==3:values.update(last_frame_ns=time.monotonic_ns(),frame_timestamp_100ns=frame_time)
             self.mark(names.get(stage,'native'),**values)
             with self.lock:self.native_events.append(dict(stage=stage,frame_time=frame_time,at_ns=time.monotonic_ns()))
@@ -217,14 +346,18 @@ class CaptureProgress:
         setter.argtypes=[callback_type];setter.restype=None;setter(self.callback)
         self.mark('idle',native_monitor=True);return True
 
-def capture_handler(runtime,output,progress,request):
+def capture_handler(runtime,output,progress,request,saving=None):
     """Native work and disk saving only. Never load OCR or send game input."""
     from maa.define import MaaWin32ScreencapMethodEnum as Method
     import full_diagnostics as diag
-    if diag.enabled():runtime.enable_capture_trace()
+    runtime.enable_capture_trace()
     diag.emit('single_capture_operation',operation=request.get('op'),generation=request.get('token'))
     op=request['op']
     if op not in ('prepare','health','capture'):raise ValueError('未知截图命令')
+    deadline=request.get('deadline_ns') if op=='capture' else None
+    def require_fresh():
+        if deadline is not None and time.monotonic_ns()>=deadline:raise CaptureWindowMissed(CAPTURE_EXPIRED)
+    require_fresh()
     hwnd,rect,_,error=runtime.game_window()
     if error:raise RuntimeError(error)
     if runtime.SA.u.GetForegroundWindow()!=hwnd:
@@ -238,17 +371,32 @@ def capture_handler(runtime,output,progress,request):
     # inside the client rectangle and can include unrelated overlay windows.
     runtime.get_ctrl(screencap_method=Method.FramePool)
     progress.mark('connected',connected=True)
-    if op=='prepare':return True
+    if op=='prepare':
+        progress.mark('prepared',prepared_ns=time.monotonic_ns())
+        return True
+    require_fresh()
     progress.mark('capturing')
     try:raw=runtime.grab_native()
     except Exception:
         progress.mark('capture_failed',connected=False);raise
+    require_fresh()
     if runtime.SA.u.GetForegroundWindow()!=hwnd:raise RuntimeError('截图期间原神失去前台，本次未保存；请重新按快捷键')
-    progress.mark('captured',last_capture_ns=time.monotonic_ns())
+    captured_ns=time.monotonic_ns()
+    progress.mark('captured',last_capture_ns=captured_ns)
     if op=='health':return True
+    info=dict(getattr(runtime,'_LAST_CAPTURE_DIAGNOSTIC',{}),
+              capture_health=progress.snapshot(),native_events=list(progress.native_events))
+    if request.get('pressed_mono_ns') is not None:
+        info['press_to_frame_ms']=round((captured_ns-request['pressed_mono_ns'])/1e6,2)
+    if request.get('defer_save'):
+        saving.submit(raw,info,request,progress.frame_ready)
+        return None
+    if deadline is not None:progress.frame_ready(request['token'])
+    return save_capture(output,raw,info,request,progress)
+
+def save_capture(output,raw,info,request,progress=None):
     from PIL import Image
-    import shutil
-    if shutil.disk_usage(output).free < raw.nbytes+16*1024**2:
+    if shutil.disk_usage(output).free < raw.nbytes+16*MIB:
         raise RuntimeError('输出盘空间不足，本次单卡未保存；释放空间后请重新按键')
     folder=Path(output)/'internal_复现'/('快捷键单卡_%d'%time.time_ns());folder.mkdir(parents=True)
     if os.environ.get('DOMAIN_TASK_RECORDING')=='1':
@@ -256,22 +404,27 @@ def capture_handler(runtime,output,progress,request):
         mark(folder,category='task_archive',pid=os.getpid(),started_ns=time.time_ns(),running=True)
     snapshot=folder/'原始详情.png';temp=folder/'原始详情.png.writing'
     from io import BytesIO
-    progress.mark('encoding');started=time.perf_counter()
+    if progress:progress.mark('encoding')
+    started=time.perf_counter()
     try:
         with BytesIO() as encoded:
             Image.fromarray(raw).save(encoded,format='PNG')
-            encoded_at=time.perf_counter();progress.mark('saving')
+            encoded_at=time.perf_counter()
+            if progress:progress.mark('saving')
             with temp.open('wb') as stream:stream.write(encoded.getbuffer())
         os.replace(temp,snapshot);saved_at=time.perf_counter()
-        info=dict(getattr(runtime,'_LAST_CAPTURE_DIAGNOSTIC',{}),capture_health=progress.snapshot(),native_events=list(progress.native_events),
-                  png_encode_seconds=round(encoded_at-started,6),disk_write_seconds=round(saved_at-encoded_at,6))
+        info.update(png_encode_seconds=round(encoded_at-started,6),disk_write_seconds=round(saved_at-encoded_at,6))
         (folder/'截图接口.json').write_text(json.dumps(info,ensure_ascii=False,indent=2),encoding='utf-8')
     except Exception:
+        try:temp.unlink(missing_ok=True)
+        except OSError:pass
         if os.environ.get('DOMAIN_TASK_RECORDING')=='1':
             mark(folder,running=False,finished_ns=time.time_ns())
         raise
-    progress.mark('saved')
-    return {'snapshot':str(snapshot)}
+    if progress:progress.mark('saved')
+    result={'snapshot':str(snapshot)}
+    if request.get('started_at_ns') is not None:result['started_at_ns']=request['started_at_ns']
+    return result
 
 def serve_capture(runtime=None,output=None,handler=None):
     """Heartbeat has its own thread; only native callback advances native work."""
@@ -299,18 +452,21 @@ def serve_capture(runtime=None,output=None,handler=None):
     def send(message):
         with write_lock:
             sys.stdout.write(PREFIX+json.dumps(message,ensure_ascii=False)+'\n');sys.stdout.flush()
+    progress.frame_ready=lambda token:send(dict(kind='frame',token=token))
     def heartbeat():
         while not stop.is_set():
             try:send(dict(kind='heartbeat',pid=os.getpid(),job_joined=True,state=progress.snapshot()))
             except (BrokenPipeError,OSError):return
             stop.wait(.25)
     heart=threading.Thread(target=heartbeat,daemon=True,name='capture-heartbeat');heart.start()
+    saving=None
     try:
         if handler is None:
             if not progress.install():raise RuntimeError('原生截图监测组件缺失，请使用完整发行包')
             if runtime is None:
                 import domain_runtime as runtime
-            handler=lambda request: capture_handler(runtime,output,progress,request)
+            saving=FrameSaveQueue(output,send)
+            handler=lambda request: capture_handler(runtime,output,progress,request,saving)
         else:
             supplied=handler;handler=lambda request:supplied(progress,request)
         progress.mark('idle')
@@ -319,14 +475,13 @@ def serve_capture(runtime=None,output=None,handler=None):
             try:
                 progress.mark('request',op=request['op'])
                 value=handler(request)
-                send(dict(kind='result',token=token,ok=True,value=value,state=progress.snapshot()))
+                if not request.get('defer_save'):
+                    send(dict(kind='result',token=token,ok=True,value=value,state=progress.snapshot()))
             except Exception as error:
-                reason=str(error)
-                if isinstance(error,OSError) and (error.errno==28 or getattr(error,'winerror',None) in (39,112)):
-                    reason='输出盘空间不足，本次单卡未完整保存；释放空间后请重新按键'
-                send(dict(kind='result',token=token,ok=False,error=reason,state=progress.snapshot()))
+                send(dict(kind='result',token=token,ok=False,error=capture_error_text(error),state=progress.snapshot()))
             finally:progress.mark('idle')
     finally:
+        if saving:saving.close()
         stop.set();heart.join(timeout=1)
         if runtime is not None:
             runtime._CTRL=None;runtime._HOVER_TASKER=None

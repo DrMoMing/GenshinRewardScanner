@@ -35,7 +35,7 @@ def _serve_pages(load_domain,run):
         if request.get('close'):return 0
         import full_diagnostics as diag
         diag.emit('page_rpc_begin',token=request.get('token'),args=request.get('args'),warm=request.get('warm'))
-        for key in ('DOMAIN_EVENTS','DOMAIN_CANCEL_FILE','DOMAIN_SCAN_STARS','DOMAIN_OCR_WORKERS','DOMAIN_ROW_INFO','DOMAIN_BEGIN_MARKER','DOMAIN_BEGIN_SESSION','DOMAIN_OCR_POOL','DOMAIN_TASK_FOLDER'):
+        for key in ('DOMAIN_EVENTS','DOMAIN_CANCEL_FILE','DOMAIN_SCAN_STARS','DOMAIN_OCR_WORKERS','DOMAIN_ROW_INFO','DOMAIN_BEGIN_MARKER','DOMAIN_BEGIN_SESSION','DOMAIN_OCR_POOL','DOMAIN_TASK_FOLDER','DOMAIN_SCAN_SESSION'):
             if key in request['env']:os.environ[key]=request['env'][key]
             else:os.environ.pop(key,None)
         try:
@@ -199,7 +199,7 @@ class SingleWorker:
             self.may_input=bool(args and args[0] in ('read','montage') and '--go' in args)
             self._capture_pending=None;self._capture_deadline=0;self._mouse_down=False
             self._current=(self.token,self._queue);self._active=True
-        selected={k:v for k,v in env.items() if k in ('DOMAIN_EVENTS','DOMAIN_CANCEL_FILE','DOMAIN_SCAN_STARS','DOMAIN_OCR_WORKERS','DOMAIN_ROW_INFO','DOMAIN_BEGIN_MARKER','DOMAIN_BEGIN_SESSION','DOMAIN_OCR_POOL','DOMAIN_TASK_FOLDER')}
+        selected={k:v for k,v in env.items() if k in ('DOMAIN_EVENTS','DOMAIN_CANCEL_FILE','DOMAIN_SCAN_STARS','DOMAIN_OCR_WORKERS','DOMAIN_ROW_INFO','DOMAIN_BEGIN_MARKER','DOMAIN_BEGIN_SESSION','DOMAIN_OCR_POOL','DOMAIN_TASK_FOLDER','DOMAIN_SCAN_SESSION')}
         try:
             self.process.stdin.write((json.dumps({'token':self.token,'image':image,'env':selected,'output':output,'warm':warm,'args':args})+'\n').encode('utf-8'))
             self.process.stdin.flush();return self

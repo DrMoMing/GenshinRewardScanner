@@ -141,7 +141,22 @@ class CaptureTrace:
             if a in first and b in first and first[b][0]>=first[a][0]:
                 result[name]=ms(first[b][0]-first[a][0])
         if 3 in first and first[3][1]:
+            result['source_time_100ns']=first[3][1]
             result['source_age_at_receive_ms']=round(first[3][0]*1000/frequency-first[3][1]/10000,3)
+        if 8 in first:
+            result['mapped_pixel_sample']=f'{first[8][1] & ((1 << 64) - 1):016x}'
+        if 19 in first:
+            result['source_sequence']=first[19][1]
+        if 24 in first:
+            result['copy_method']='client_region' if first[24][1] else 'full_texture'
+        if 28 in first:
+            result['comparison_map_hresult']=f'0x{first[28][1] & 0xffffffff:08x}'
+            result['original_row_sample']=f'{first[30][1] & ((1 << 64) - 1):016x}' if 30 in first else None
+            if 29 in first:
+                result['new_staging_row_sample']=f'{first[29][1] & ((1 << 64) - 1):016x}'
+        if 9 in first:
+            result['failure_reason']={1:'source_time_not_increasing',2:'d3d_map',3:'window_resized',
+                4:'window_unavailable',5:'frame_timeout',6:'frame_callback'}.get(first[9][1],first[9][1])
         if 5 in first:result['native_complete_to_job_ms']=ms(now-first[5][0])
         return result
 

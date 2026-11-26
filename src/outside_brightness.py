@@ -1,6 +1,9 @@
 # Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # AI-generated project code: written and modified with OpenAI Codex.
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """Diagnostic-only brightness ratios in known reward-card colour patches.
 
 No capture, OCR, geometry search, acceptance threshold or input. The caller
