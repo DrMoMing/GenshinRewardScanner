@@ -1,6 +1,9 @@
 # Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # AI-generated project code: written and modified with OpenAI Codex.
+# Required Notice: Copyright (c) 2026 DrMoMing (https://github.com/DrMoMing/GenshinRewardScanner)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# AI-generated project code: written and modified with OpenAI Codex.
 """Experimental whole-name templates before OCR, with explicit per-field fallback.
 
 Only names are handled here. The caller owns learning maturity/audits and OCR;

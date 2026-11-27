@@ -31,14 +31,14 @@ def _run_visible(domain,cache_root,skip,stop,report):
         if stop.is_set():raise RuntimeError('用户中止；已在动作边界停下')
         hwnd,_,_,err=SR.game_window()
         if err:raise RuntimeError(err)
-        if SR.u.GetForegroundWindow()!=hwnd:raise RuntimeError('游戏失去前台；已停手')
+        if SR.u.GetForegroundWindow()!=hwnd:raise RuntimeError('游戏窗口已不在前台。')
     def forbidden(*args,**kwargs):raise AssertionError('局外对照不允许OCR、拖动、重新标定或写表')
     # These branches must never silently turn this tool into the full scanner.
     domain.ocr=forbidden;SR.drag_h=forbidden
     os.environ['DOMAIN_LAYOUT_CACHE_ROOT']=str(cache_root)
     boundary();SR.enable_capture_trace();SR.prepare_geometry_cache();SR.get_ctrl();SR.prepare_hover();prepare(SR)
     raw=SR.grab_native();profile=layout_cache.find(raw)
-    if profile is None:raise RuntimeError('没有匹配本次实际分辨率及获得标题的整扫基线；请先用正式版完成一趟，或选择它的程序目录。未点击游戏。')
+    if profile is None:raise RuntimeError('没有与当前分辨率和奖励页标题匹配的扫描基线。请在相同分辨率下用扫描器完成一次整趟扫描，再选择对应的扫描器目录。')
     SR._GEOMETRY=profile['geometry'];SR._LAYOUT_PROFILE=profile
     # find() just validated this exact ROW frame's size, bars and title. Consume
     # task-boundary verification now; leaving it armed until the first closing
@@ -48,7 +48,7 @@ def _run_visible(domain,cache_root,skip,stop,report):
     baseline=normalize(raw,SR._GEOMETRY);domain.configure_geometry(baseline)
     domain.title_context(baseline,admission=True,persist=False)
     cards=[dict(q,name='可见格%d'%(i+1)) for i,q in enumerate(domain.bar_slots(baseline)) if q['whole']]
-    if len(cards)<2:raise RuntimeError('缓存处未找到完整横排；未点击游戏')
+    if len(cards)<2:raise RuntimeError('缓存中未找到完整的奖励横排。')
     skip=int(skip)
     if not 0<=skip<len(cards):raise RuntimeError('跳过格数必须小于当前完整卡片数')
     report.update(profile=profile['path'],raw_size=list(raw.shape[1::-1]),cards=cards,skip=skip,items=[])
@@ -199,7 +199,7 @@ def main(base,load_domain):
                 if busy[0] or domain[0] is None:continue
                 try:
                     cache=Path(source.get())/'缓存/画面定位'
-                    if not cache.is_dir():raise RuntimeError('所选目录没有整扫定位基线；未点击游戏。')
+                    if not cache.is_dir():raise RuntimeError('所选目录没有整趟扫描的定位基线。')
                     nskip=int(skip.get())
                     config.update(source=source.get(),hotkey=hotkey.get(),skip=nskip,full_monitor=full.get())
                     settings.write_text(json.dumps(config,ensure_ascii=False,indent=2),encoding='utf8')

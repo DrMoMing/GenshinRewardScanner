@@ -101,7 +101,7 @@ def _rec_pre(crops, h=REC_H, max_w=REC_MAX_W, color_order='BGR'):
         if color_order == 'BGR':
             c = c[:, :, ::-1]
         elif color_order != 'RGB':
-            raise ValueError('recognition color order must be BGR or RGB')
+            raise ValueError('文字识别的颜色顺序必须是 BGR 或 RGB。')
         ch, cw = c.shape[:2]
         nw = max(1,int(round(cw * h / float(max(1,ch)))))
         if max_w is not None:nw=min(max_w,nw)
@@ -147,7 +147,7 @@ def ctc_positions(logits,keys,width):
 class Engine:
     def __init__(self, det_path, rec_path, keys_path, threads=0, recognition_color='BGR'):
         if recognition_color not in ('RGB','BGR'):
-            raise ValueError('recognition color order must be BGR or RGB')
+            raise ValueError('文字识别的颜色顺序必须是 BGR 或 RGB。')
         self.recognition_color = recognition_color
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL

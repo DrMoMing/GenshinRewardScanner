@@ -6,6 +6,10 @@ from array import array
 import ctypes as C
 from ctypes import wintypes as W
 import math
+import os
+from pathlib import Path
+from uuid import UUID
+import wave
 import queue
 import random
 import threading
@@ -16,6 +20,7 @@ PATTERNS = {
     'capture': (),
     'success': ((880, .10), (1108.73, .10), (1318.51, .10), (1760, .16)),
     'failure': ((523.25, .10), (440, .10), (349.23, .10), (261.63, .16)),
+    'rejected': ((245, .105), (0, .045), (220, .125)),
 }
 
 def pcm(kind):
@@ -56,6 +61,122 @@ def pcm(kind):
     samples = array('h', (round(6400 * value / peak) for value in values))
     return samples.tobytes()
 
+NAMES={'capture':'截图','success':'成功','failure':'失败','rejected':'未接收'}
+MAX_SECONDS=3
+
+
+def sound_directory():
+    return Path(os.environ.get('LOCALAPPDATA') or Path.home()/'AppData/Local')/'DomainScanner'/'提示音'
+
+
+def _guid(value):
+    return (C.c_byte*16).from_buffer_copy(UUID(value).bytes_le)
+
+
+def _mp3(path):
+    """Decode with Windows Media Foundation; return PCM, sample rate and channels."""
+    mf=C.WinDLL('mfplat')
+    reader_lib=C.WinDLL('mfreadwrite')
+    ole=C.WinDLL('ole32')
+    P=C.c_void_p; D=W.DWORD; B=W.BYTE
+    for dll,name,args in (
+        (ole,'CoInitializeEx',(P,D)),(mf,'MFStartup',(D,D)),
+        (mf,'MFCreateMediaType',(C.POINTER(P),)),
+        (reader_lib,'MFCreateSourceReaderFromURL',(C.c_wchar_p,P,C.POINTER(P))),
+    ):
+        fn=getattr(dll,name);fn.argtypes=args;fn.restype=C.c_long
+
+    def check(hr):
+        if hr<0:raise ValueError('Windows 无法解码此音频（0x%08X）'%(hr&0xffffffff))
+
+    def call(obj,slot,args,*values,result=C.c_long):
+        vtable=C.cast(obj,C.POINTER(C.POINTER(P))).contents
+        return C.WINFUNCTYPE(result,P,*args)(vtable[slot])(obj,*values)
+
+    def release(obj):
+        if obj:call(obj,2,(),result=W.ULONG)
+
+    major=_guid('48eba18e-f8c9-4687-bf11-0a74c9f96a8f')
+    subtype=_guid('f7e34c9a-42e8-4714-b74b-cb29d72c35e5')
+    audio=_guid('73647561-0000-0010-8000-00aa00389b71')
+    pcm_type=_guid('00000001-0000-0010-8000-00aa00389b71')
+    bits_key=_guid('f2deb57f-40fa-4764-aa33-ed4f2d1ff669')
+    rate_key=_guid('5faeeae7-0290-4c31-9e8a-c534f68d9dba')
+    channels_key=_guid('37e48bf5-645e-4c5b-89de-ada9e29b696a')
+    check(ole.CoInitializeEx(None,0))
+    reader,kind,current=P(),P(),P()
+    started=False;stream=0xfffffffd
+    try:
+        check(mf.MFStartup(0x00020070,0));started=True
+        check(reader_lib.MFCreateSourceReaderFromURL(str(path),None,C.byref(reader)))
+        check(mf.MFCreateMediaType(C.byref(kind)))
+        for key,value in ((major,audio),(subtype,pcm_type)):
+            check(call(kind,24,(P,P),C.byref(key),C.byref(value)))
+        check(call(kind,21,(P,D),C.byref(bits_key),16))
+        check(call(reader,7,(D,P,P),stream,None,kind))
+        check(call(reader,6,(D,C.POINTER(P)),stream,C.byref(current)))
+        def attribute(key):
+            value=D()
+            check(call(current,7,(P,C.POINTER(D)),C.byref(key),C.byref(value)))
+            return value.value
+        rate,channels=attribute(rate_key),attribute(channels_key)
+        if attribute(bits_key)!=16 or channels not in (1,2) or not 8000<=rate<=96000:
+            raise ValueError('不支持此音频的采样格式')
+        data=bytearray();limit=rate*channels*2*MAX_SECONDS
+        for _ in range(1200):
+            flag=D();sample=P()
+            check(call(reader,9,(D,D,P,C.POINTER(D),P,C.POINTER(P)),stream,0,None,C.byref(flag),None,C.byref(sample)))
+            buffer=P()
+            try:
+                if flag.value&0x21:raise ValueError('解码中断或音频格式发生变化')
+                if sample:
+                    check(call(sample,41,(C.POINTER(P),),C.byref(buffer)))
+                    address=C.POINTER(B)();length=D()
+                    check(call(buffer,3,(C.POINTER(C.POINTER(B)),P,C.POINTER(D)),C.byref(address),None,C.byref(length)))
+                    try:
+                        if len(data)+length.value>limit:raise ValueError('提示音超过 3 秒')
+                        data.extend(C.string_at(address,length.value))
+                    finally:call(buffer,4,())
+                if flag.value&2:
+                    if not data or len(data)%(channels*2):raise ValueError('没有有效的音频采样')
+                    return bytes(data),rate,channels,2
+            finally:
+                release(buffer);release(sample)
+        raise ValueError('音频数据不完整')
+    finally:
+        for obj in (current,kind,reader):release(obj)
+        if started:mf.MFShutdown()
+        ole.CoUninitialize()
+
+
+def _wave(path):
+    with wave.open(str(path),'rb') as file:
+        size,rate,channels,count=file.getsampwidth(),file.getframerate(),file.getnchannels(),file.getnframes()
+        if channels not in (1,2) or size not in (1,2) or not 8000<=rate<=96000:
+            raise ValueError('WAV 须为 8 或 16 位、单声道或双声道 PCM')
+        if count>rate*MAX_SECONDS:raise ValueError('提示音超过 3 秒')
+        data=file.readframes(count)
+        if not data or len(data)!=count*size*channels:raise ValueError('没有完整的音频采样')
+        return data,rate,channels,size
+
+
+def _load_cue(kind,folder=None):
+    stem=NAMES[kind];folder=sound_directory() if folder is None else Path(folder)
+    for ext,decode in (('.wav',_wave),('.mp3',_mp3)):
+        path=folder/(stem+ext)
+        try:
+            if not path.is_file():continue
+            if path.stat().st_size>8*1024*1024:raise ValueError('文件超过 8 MiB')
+            return path.name, decode(path)
+        except (OSError,ValueError,EOFError,wave.Error) as error:
+            print('自定义提示音 %s 无法读取：%s'%(path.name,error),flush=True)
+    return '', (pcm(kind),RATE,1,2)
+
+
+def load_cue(kind,folder=None):
+    return _load_cue(kind,folder)[1]
+
+
 class Format(C.Structure):
     _fields_=[('tag',W.WORD),('channels',W.WORD),('rate',W.DWORD),('average',W.DWORD),
               ('align',W.WORD),('bits',W.WORD),('extra',W.WORD)]
@@ -68,6 +189,7 @@ class Voice:
     def __init__(self,kind):
         self.kind=kind;self.jobs=queue.Queue();self.stop=threading.Event();self.error=''
         self.played=0;self.ready=threading.Event()
+        self.source_name=''
         self.thread=threading.Thread(target=self.run,daemon=True,name='sound-'+kind)
         self.thread.start()
 
@@ -79,10 +201,13 @@ class Voice:
             for name in ('waveOutPrepareHeader','waveOutWrite','waveOutUnprepareHeader'):
                 getattr(audio,name).argtypes=[W.HANDLE,C.POINTER(Header),W.UINT]
             audio.waveOutReset.argtypes=[W.HANDLE];audio.waveOutClose.argtypes=[W.HANDLE]
-            format=Format(1,1,RATE,RATE*2,2,16,0)
+            source_name,(data,rate,channels,width)=_load_cue(self.kind)
+            align=channels*width
+            format=Format(1,channels,rate,rate*align,align,width*8,0)
             code=audio.waveOutOpen(C.byref(device),0xffffffff,C.byref(format),0,0,0)
             if code:raise RuntimeError('音频设备打开失败 %d'%code)
-            data=pcm(self.kind);buffer=C.create_string_buffer(data)
+            buffer=C.create_string_buffer(data)
+            self.source_name=source_name
             self.ready.set()
             while not self.stop.is_set():
                 if self.jobs.get() is None:break
@@ -92,7 +217,7 @@ class Voice:
                 try:
                     code=audio.waveOutWrite(device,C.byref(header),C.sizeof(header))
                     if code:raise RuntimeError('提示音播放失败 %d'%code)
-                    deadline=time.monotonic()+len(data)/(RATE*2)+2
+                    deadline=time.monotonic()+len(data)/(rate*align)+2
                     while not header.flags&1 and not self.stop.wait(.005):
                         if not self.jobs.empty():break
                         if time.monotonic()>deadline:raise RuntimeError('音频设备播放超时')
@@ -102,6 +227,7 @@ class Voice:
                     audio.waveOutUnprepareHeader(device,C.byref(header),C.sizeof(header))
         except Exception as error:self.error=str(error)
         finally:
+            self.source_name=''
             self.ready.set()
             if device.value and audio is not None:
                 audio.waveOutReset(device);audio.waveOutClose(device)
@@ -139,6 +265,10 @@ def play(kind):prepare().play(kind)
 
 def error():
     with _lock:return _audio.error() if _audio else ''
+
+def active_sources():
+    with _lock:
+        return {kind: _audio.voices[kind].source_name for kind in NAMES} if _audio else {}
 
 def close():
     global _audio

@@ -25,6 +25,12 @@ _CTRL = None
 _CTRL_HWND = None
 _CTRL_SIZE = None
 _CTRL_SCREENCAP_METHOD = None
+_CTRL_MINIMIZE_EPOCH = 0
+_CTRL_GENERATION = 0
+_CTRL_INVALID_REASON = None
+_MINIMIZE_HWND = None
+_MINIMIZE_EPOCH = 0
+_MINIMIZE_WATCH = None
 _HOVER_TASKER = None
 GAME_HWND = None
 GAME_TITLE = '原神'
@@ -39,6 +45,8 @@ _LAYOUT_PROFILE = None
 _VERIFY_CACHED_GEOMETRY = False
 _ACTIVE_LAYOUT_PATH = None
 _LAST_CURSOR_CHECK = None
+_LAST_REWARD_REJECTION = None
+_LAST_UNVERIFIED_PAGE_FRAME = None
 _CAPTURE_TRACE = None
 _CAPTURE_CV_READY = False
 _WINDOW_QUERIES = threading.local()
@@ -177,15 +185,92 @@ def game_window():
     rc = wt.RECT(pt.x, pt.y, pt.x + cw, pt.y + ch)
     return w, rc, cw / 1920.0, ''
 
+
+def _track_minimize(hwnd):
+    """Remember native minimize events even when they fall between GUI polls."""
+    global _MINIMIZE_HWND, _MINIMIZE_WATCH
+    _MINIMIZE_HWND = hwnd
+    if _MINIMIZE_WATCH is not None:
+        return
+    ready = threading.Event()
+
+    def watch():
+        callback_type = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND,
+                                           wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
+
+        @callback_type
+        def on_event(_hook, _event, window, _object, _child, _thread, _time):
+            global _MINIMIZE_EPOCH
+            if window == _MINIMIZE_HWND:
+                _MINIMIZE_EPOCH += 1
+
+        dll = ctypes.WinDLL('user32', use_last_error=True)
+        dll.SetWinEventHook.argtypes = [wt.DWORD, wt.DWORD, wt.HMODULE, callback_type,
+                                       wt.DWORD, wt.DWORD, wt.DWORD]
+        dll.SetWinEventHook.restype = wt.HANDLE
+        hook = dll.SetWinEventHook(0x0016, 0x0016, None, on_event, 0, 0, 0)
+        ready.set()
+        if not hook:
+            print('[截图恢复] 无法订阅窗口最小化事件。', flush=True)
+            return
+        message = wt.MSG()
+        while dll.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            dll.TranslateMessage(ctypes.byref(message))
+            dll.DispatchMessageW(ctypes.byref(message))
+
+    _MINIMIZE_WATCH = threading.Thread(target=watch, daemon=True, name='capture-window-events')
+    _MINIMIZE_WATCH.start()
+    ready.wait(.25)
+
+
+def invalidate_capture(reason):
+    global _CTRL_INVALID_REASON
+    _CTRL_INVALID_REASON = reason
+
+
+def desktop_anchor_evidence():
+    """An independent foreground image for diagnosing a failed input gate."""
+    from PIL import ImageGrab
+    from domain_geometry import normalize
+
+    hwnd, rect, _, error = game_window()
+    geometry = _GEOMETRY
+    if error or geometry is None or SA.u.GetForegroundWindow() != hwnd:
+        return None
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if _CTRL_SIZE != (width, height):
+        return None
+    dll = ctypes.WinDLL('user32')
+    dll.WindowFromPoint.argtypes = [wt.POINT]
+    dll.WindowFromPoint.restype = wt.HWND
+    dll.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+    dll.GetAncestor.restype = wt.HWND
+
+    def row_visible():
+        return SA.u.GetForegroundWindow() == hwnd and all(
+            dll.GetAncestor(dll.WindowFromPoint(wt.POINT(rect.left + int(x * width),
+                                                         rect.top + int(y * height))), 2) == hwnd
+            for y in (.35, .48, .58) for x in (.15, .30, .50, .70, .85))
+
+    if not row_visible():
+        return None
+    image = ImageGrab.grab((rect.left, rect.top, rect.right, rect.bottom), all_screens=True)
+    if image.size != (width, height) or not row_visible():
+        return None
+    return normalize(np.asarray(image.convert('RGB')), geometry)
+
 def grab_bgr():
     """Validated native BGR, without whole-frame conversion or normalization."""
     global _CTRL,_CTRL_HWND,_CTRL_SIZE,_GEOMETRY,_HOVER_TASKER,_LAST_CAPTURE_DIAGNOSTIC
     controller=get_ctrl();started=time.perf_counter()
+    page_watchdog = os.environ.get('DOMAIN_PAGE_CAPTURE_WATCHDOG') == '1'
+    if page_watchdog and _CAPTURE_TRACE is None:
+        enable_capture_trace()
     if _diag.enabled():_diag.emit('capture_request',controller=id(controller),method=_CTRL_SCREENCAP_METHOD,
                                 window=_diag.window_state(_CTRL_HWND))
     native_token=_CAPTURE_TRACE.begin() if _CAPTURE_TRACE is not None else None
     capture_id=None
-    if os.environ.get('DOMAIN_PAGE_CAPTURE_WATCHDOG')=='1':
+    if page_watchdog:
         capture_id=str(time.time_ns())
         from scan_timing import write_line
         write_line('@@DOMAIN_CAPTURE@@'+json.dumps(dict(event='begin',id=capture_id,hwnd=int(_CTRL_HWND or 0),started=time.monotonic())))
@@ -195,9 +280,21 @@ def grab_bgr():
         _LAST_CAPTURE_DIAGNOSTIC={'job_id':job.job_id,'succeeded':bool(job.succeeded),
             'seconds':round(time.perf_counter()-started,4),'hwnd':_CTRL_HWND,
             'client':_CTRL_SIZE,'method':_CTRL_SCREENCAP_METHOD,
+            'backend':'wgc_frame_arrived', 'connection':_CTRL_GENERATION,
             'post_seconds':round(posted-started,6),'wait_seconds':round(waited-posted,6)}
         if native_token is not None:
             _LAST_CAPTURE_DIAGNOSTIC['native']=_CAPTURE_TRACE.finish(native_token)
+        if page_watchdog:
+            native = _LAST_CAPTURE_DIAGNOSTIC.get('native', {})
+            age = native.get('source_age_at_receive_ms')
+            if age is None or age < 0:
+                if not native.get('enabled'):
+                    reason = '原生帧计时不可用'
+                elif native.get('dropped_events'):
+                    reason = '原生计时缓冲溢出'
+                else:
+                    reason = '本次截图未取得有效的原生帧时间戳'
+                _LAST_CAPTURE_DIAGNOSTIC['frame_age_unavailable'] = reason
         # Job.get() returns ControllerCachedImage, even after a failed operation.
         # Never accept that old image or silently re-shoot a delayed hotkey task.
         if not job.succeeded:
@@ -289,6 +386,13 @@ def frame_from_rgb(rgb):
 
 def grab_game():
     return frame_from_rgb(grab_native())
+
+
+def clear_reward_geometry():
+    global _GEOMETRY,_LAYOUT_PROFILE,_VERIFY_CACHED_GEOMETRY
+    _GEOMETRY=None
+    _LAYOUT_PROFILE=None
+    _VERIFY_CACHED_GEOMETRY=False
 
 
 def prepare_geometry_cache():
@@ -399,32 +503,52 @@ def move_abs(x,y):
 def get_ctrl(screencap_method=None):
     """复用框架控制器；窗口、尺寸、显式方法变化或失败清空后重新建立。"""
     global _CTRL,_CTRL_HWND,_CTRL_SIZE,_CTRL_SCREENCAP_METHOD,_GEOMETRY,_LAST_RAW,GAME_HWND,_HOVER_TASKER
+    global _CTRL_MINIMIZE_EPOCH, _CTRL_GENERATION, _CTRL_INVALID_REASON
     w, rc, k, err = game_window()
     if err:
         _CTRL=None;_CTRL_HWND=None
         raise RuntimeError('错误：%s' % err)
     size=(rc.right-rc.left,rc.bottom-rc.top)
+    _track_minimize(w)
+    minimize_epoch = _MINIMIZE_EPOCH
+    minimized_since_connect = _CTRL is not None and _CTRL_MINIMIZE_EPOCH != minimize_epoch
     if _GEOMETRY is not None and _CTRL_HWND==w and _CTRL_SIZE is not None and _CTRL_SIZE!=size:
         raise RuntimeError('扫描期间游戏客户区尺寸改变，停止以免输入错位')
-    if (_CTRL is None or _CTRL_HWND!=w or _CTRL_SIZE!=size
+    if (_CTRL is None or _CTRL_HWND!=w or _CTRL_SIZE!=size or minimized_since_connect
+            or _CTRL_INVALID_REASON is not None
             or screencap_method is not None and _CTRL_SCREENCAP_METHOD!=int(screencap_method)):
         from maa.controller import Win32Controller
+        from maa.define import MaaWin32ScreencapMethodEnum
         _GEOMETRY=None;_LAST_RAW=None;_SCR.clear();GAME_HWND=w
-        method=_CTRL_SCREENCAP_METHOD if screencap_method is None else int(screencap_method)
+        method = int(MaaWin32ScreencapMethodEnum.FramePool if screencap_method is None else screencap_method)
+        reason = 'minimized' if minimized_since_connect else (_CTRL_INVALID_REASON or 'connect')
+        if reason != 'connect':
+            print('[截图恢复] 截图会话已失效，正在重新连接。', flush=True)
         if _diag.enabled():_diag.emit('controller_connect_begin',old_controller=id(_CTRL) if _CTRL is not None else None,
             method=method,window=_diag.window_state(w))
-        candidate=Win32Controller(w) if method is None else Win32Controller(w,screencap_method=method)
+        candidate=Win32Controller(w,screencap_method=method)
         if not candidate.post_connection().wait().succeeded:raise RuntimeError('截图控制器连接失败；尚未截图或操作游戏')
         if not candidate.set_screenshot_use_raw_size(True):raise RuntimeError('截图接口拒绝原生尺寸配置，停止以免比例失真')
         _CTRL=candidate;_CTRL_HWND=w;_CTRL_SIZE=size;_CTRL_SCREENCAP_METHOD=method;_HOVER_TASKER=None
+        _CTRL_MINIMIZE_EPOCH = minimize_epoch
+        _CTRL_GENERATION += 1
+        _CTRL_INVALID_REASON = None
+        print('[截图连接] '+json.dumps({'backend':'wgc_frame_arrived','connection':_CTRL_GENERATION,
+              'hwnd':w,'client':size,'reason':reason}),flush=True)
         if _diag.enabled():_diag.emit('controller_connected',controller=id(candidate),method=method,
                                     window=_diag.window_state(w))
         #   # ★ 拿原生尺寸（MaaMCP 是拿 720 再自己放大；原生更清晰）
     return _CTRL
 
+def _wait_drag_input(job, action):
+    job.wait()
+    if not job.succeeded:
+        raise RuntimeError(f'横拖{action}未提交成功，输入作业 {job.job_id}。')
+
+
 def drag_h(x0, dx, py, steps=25, hold=0.60, dt=0.005, park_after=False, on_down=None, before_up=None,lift_to_top=False,overlap_hold=False,on_hold=None):
     """按 steps 分步横拖，默认 25 步；支持按下与松手前回调。overlap_hold 将截图分析耗时计入持握时间并补足剩余等待。"""
-    global _LAST_DRAG_TIMINGS
+    global _LAST_DRAG_TIMINGS, _LAST_DRAG_RELEASE_MONOTONIC
     _LAST_DRAG_TIMINGS={}
     stamp=time.perf_counter()
     def phase(name):
@@ -434,32 +558,15 @@ def drag_h(x0, dx, py, steps=25, hold=0.60, dt=0.005, park_after=False, on_down=
     if not ensure_foreground():
         raise RuntimeError('游戏未处于前台：%s；拒绝发送输入' % GAME_TITLE)
     phase('控制器及前台秒')
-    c.post_touch_down(*to_client(x0,py), 0, 1).wait()
-    action_mark('drag_down')
-    phase('按下提交秒')
-    _timed_sleep(0.12,"输入等待:0.12")
-    phase('按下后停留秒')
-    if on_down is not None:
-        on_down()
-    phase('按住截图及白边确认秒')
-    rail_y=None
-    if lift_to_top:
-        # Client coordinates, never monitor/screen coordinates. Only the
-        # vertical leg is new; preserve the existing horizontal trajectory.
-        client_x,client_y=to_client(x0,py)
-        rail_y=12
-        for k in range(1,7):
-            c.post_touch_move(client_x,round(client_y+(rail_y-client_y)*k/6),0,1).wait()
-            if dt>0:time.sleep(dt)
-    phase('按住上移到客户区顶部秒')
-    for k in range(1, steps + 1):
-        client_x,client_y=to_client(x0+dx*k/steps,py)
-        c.post_touch_move(client_x,rail_y if rail_y is not None else client_y,0,1).wait()
-        if dt > 0:
-            time.sleep(dt)
-    phase('轨迹及逐步提交秒')
-    action_mark('drag_motion_end')
-    stationary=time.monotonic()
+    target=to_screen(x0,py)
+    if not cursor_matches(*target,tolerance=2):
+        move_abs(*target)
+    positioned=cursor_matches(*target,tolerance=2)
+    print('[横拖落点] '+json.dumps(dict(stage='before_down',**_LAST_CURSOR_CHECK),ensure_ascii=False),flush=True)
+    if not positioned or SA.u.GetForegroundWindow()!=_CTRL_HWND:
+        raise RuntimeError('横拖起点未确认或游戏已失去前台，未按下鼠标。')
+
+    stationary=None
     # Existing callers retain hold -> capture -> UP. Only full-scan head return
     # opts into capture/analysis inside the pre-UP hold; rebound starts after UP.
     def finish_hold():
@@ -470,17 +577,49 @@ def drag_h(x0, dx, py, steps=25, hold=0.60, dt=0.005, park_after=False, on_down=
         if remaining:_timed_sleep(remaining,"输入等待:hold补差" if overlap_hold or on_hold is not None else "输入等待:hold")
         phase('末端停留秒')
     try:
+        down=c.post_touch_down(*to_client(x0,py), 0, 1)
+        _wait_drag_input(down,'按下')
+        action_mark('drag_down')
+        phase('按下提交秒')
+        positioned=cursor_matches(*target,tolerance=2)
+        print('[横拖落点] '+json.dumps(dict(stage='after_down',job=down.job_id,
+            pressed=bool(SA.u.GetAsyncKeyState(0x01)&0x8000),**_LAST_CURSOR_CHECK),ensure_ascii=False),flush=True)
+        if not positioned:
+            raise RuntimeError('横拖按下后偏离目标坐标，已停止。')
+        _timed_sleep(0.12,"输入等待:0.12")
+        phase('按下后停留秒')
+        if on_down is not None:on_down()
+        phase('按住截图及白边确认秒')
+        rail_y=None
+        if lift_to_top:
+            client_x,client_y=to_client(x0,py)
+            rail_y=12
+            for k in range(1,7):
+                _wait_drag_input(c.post_touch_move(client_x,round(client_y+(rail_y-client_y)*k/6),0,1),'移动')
+                if dt>0:time.sleep(dt)
+        phase('按住上移到客户区顶部秒')
+        for k in range(1, steps + 1):
+            client_x,client_y=to_client(x0+dx*k/steps,py)
+            _wait_drag_input(c.post_touch_move(client_x,rail_y if rail_y is not None else client_y,0,1),'移动')
+            if dt > 0:time.sleep(dt)
+        phase('轨迹及逐步提交秒')
+        action_mark('drag_motion_end')
+        stationary=time.monotonic()
         if not overlap_hold:finish_hold()
         if before_up is not None:before_up()
         phase('松手前截图及分析提交秒')
         if overlap_hold:finish_hold()
     finally:
-        c.post_touch_up().wait()
-        global _LAST_DRAG_RELEASE_MONOTONIC
+        try:
+            _wait_drag_input(c.post_touch_up(),'松开')
+        except Exception:
+            SA.mouse(0x0004)
+            raise
         _LAST_DRAG_RELEASE_MONOTONIC=time.monotonic()
         phase('松开提交秒')
-        _LAST_DRAG_TIMINGS['原地持握累计秒']=round(_LAST_DRAG_RELEASE_MONOTONIC-stationary,4)
-    action_mark('drag_release')
+        if stationary is not None:
+            _LAST_DRAG_TIMINGS['原地持握累计秒']=round(_LAST_DRAG_RELEASE_MONOTONIC-stationary,4)
+        action_mark('drag_release')
     if park_after:
         park()
         _timed_sleep(0.6,"输入等待:0.6")

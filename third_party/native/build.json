@@ -1,9 +1,7 @@
 {
-  "kind": "RC69 capture unchanged; skip no-op NOTOPMOST inactive only",
-  "sha256": "5e856d0e072e8667c62e824e47d61af4dce1cc4b2eb3c2446687f8cd63fe076f",
-  "source": "rc77-input-source.zip",
-  "foreground_unchanged": true,
-  "real_topmost_cleanup_retained": true,
-  "query_error_original_fallback": true,
-  "capture_byte_identical_source": true
+  "sha256": "86258c34ca6ec81279afa0d4e8e6a16084e490e96892366c05c4b87d766ae4a6",
+  "source": "preview14-wgc-source.zip",
+  "backend": "WGC FramePool",
+  "copy_method": "CopySubresourceRegion",
+  "input": "Maa SeizeInput"
 }

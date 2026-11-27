@@ -162,14 +162,13 @@ class DesktopView:
         widget = self.bindings.get(name)
         if widget is None:
             raise ValueError(
-                "bindings['%s'] must be the existing widget; "
-                "DesktopView does not create a replacement." % name
+                "界面绑定 %s 必须使用已有控件" % name
             )
         return widget
 
     def _get(self, name):
         if name not in self.bindings:
-            raise KeyError("bindings['%s'] is required" % name)
+            raise KeyError("缺少界面绑定：%s" % name)
         return self.bindings[name]
 
     def _act(self, name, *args):

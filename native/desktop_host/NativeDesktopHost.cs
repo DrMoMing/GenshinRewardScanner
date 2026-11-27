@@ -114,6 +114,10 @@ namespace NativeWpf
         string _lanes = "— / —", _laneSub = "启动时按内存预算调整";
         string _window = "检测中", _windowSub = "正在读取窗口";
         string _captureName = "等待检测", _captureMeta = "正在读取窗口信息", _captureStatus = "未知";
+        string _resolutionWarning = "";
+        public string ResolutionWarning { get { return _resolutionWarning; } set { Set(ref _resolutionWarning,value,"ResolutionWarning"); } }
+        string _shortcutWarning = "";
+        public string ShortcutWarning { get { return _shortcutWarning; } set { Set(ref _shortcutWarning,value,"ShortcutWarning"); } }
         string _laneFeatureText = "启动时按可用内存调整 · 本次实际 — 路";
         string _taskSummary = "未选星级";
         string _shortcutFull = "Ctrl+Alt+S", _shortcutSingle = "Ctrl+Alt+D", _shortcutPuzzle = "Ctrl+Alt+P";
@@ -302,6 +306,9 @@ namespace NativeWpf
 
     public sealed class BatchItem : NotifyBase
     {
+        public bool Convertible { get; set; }
+        public bool OpenFolder { get; set; }
+        public bool OpenRecord { get; set; }
         string _statusText="";
         public string StatusText { get { return _statusText; } set { Set(ref _statusText,value,"StatusText"); } }
         string _name = "", _title = "", _stars = "", _meta = "", _sizeText = "0 B", _stateText = "可清理", _reason = "";
@@ -367,6 +374,11 @@ namespace NativeWpf
         readonly Dictionary<string, Button> _pending = new Dictionary<string, Button>();
         readonly Dictionary<string, string> _pendingNames = new Dictionary<string, string>();
         string _capturingShortcut;
+        bool _manualShortcut;
+        readonly bool[] _shortcutKeysDown = new bool[255];
+        readonly DispatcherTimer _shortcutPoll;
+        ModifierKeys _lastPolledModifiers;
+        DateTime _shortcutPollUntil;
         readonly bool _preview;
         NativeLayoutDemo _demo;
         readonly HashSet<int> _stars = new HashSet<int>();
@@ -399,10 +411,18 @@ namespace NativeWpf
             _saveTimer.Tick += delegate { _saveTimer.Stop(); SendAction("save_preferences", null, null); };
             _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
             _closeTimer.Tick += delegate { _closeTimer.Stop(); _closeSent = false; };
+            _shortcutPoll = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(15) };
+            _shortcutPoll.Tick += delegate { PollShortcut(); };
             Wire();
             _window.Loaded += Window_Loaded;
             _window.SizeChanged += Window_SizeChanged;
             _window.Closing += Window_Closing;
+            _window.Closed += delegate { _shortcutPoll.Stop(); };
+            _window.Deactivated += delegate
+            {
+                if (_shortcutPoll.IsEnabled && _capturingShortcut != null)
+                    CancelShortcut(Find<TextBox>(_capturingShortcut));
+            };
             _vm.Settings.Changed += Settings_Changed;
             _vm.PropertyChanged += ViewModel_PropertyChanged;
             _batchView = CollectionViewSource.GetDefaultView(_vm.Batches);
@@ -475,6 +495,19 @@ namespace NativeWpf
             Find<Button>("FilterAll").Click += delegate { SetFilter(0); };
             Find<Button>("FilterCleanable").Click += delegate { SetFilter(1); };
             Find<Button>("FilterProtected").Click += delegate { SetFilter(2); };
+            Find<Button>("FilterConvert").Click += delegate { SetFilter(3); };
+            Find<Button>("ConvertSelected").Click += delegate { SaveSelected(false); };
+            Find<Button>("ExportBatchJson").Click += delegate { SaveSelected(true); };
+            Find<ItemsControl>("BatchList").AddHandler(Button.ClickEvent,new RoutedEventHandler(OpenBatch),true);
+            foreach (string category in new[]{"images","results","diagnostics"})
+            {
+                string setting = "auto_" + category;
+                Find<CheckBox>(setting).Click += delegate(object source, RoutedEventArgs args) {
+                    _settingsSignature = "";
+                    SendSet(setting, ((CheckBox)source).IsChecked == true);
+                    _saveTimer.Stop(); _saveTimer.Start();
+                };
+            }
             Find<Button>("SelectAllCleanable").Click += delegate { ToggleAllCleanable(); };
             Find<Button>("PreviewCleanup").Click += delegate { ShowCleanupModal(); };
             Find<Button>("PreviewExport").Click += delegate { ShowExportModal(); };
@@ -496,11 +529,22 @@ namespace NativeWpf
             Find<Button>("TutExcel").Click += delegate { ScrollTo("TutExcelArticle"); };
             Find<Button>("TutControl").Click += delegate { ScrollTo("TutControlArticle"); };
             Find<Button>("TutOverlay").Click += delegate { ScrollTo("TutOverlayArticle"); };
+            Find<Button>("TutSound").Click += delegate { ScrollTo("TutSoundArticle"); };
+            ScrollViewer helpScroll=Find<ScrollViewer>("PageHelp");
+            helpScroll.ScrollChanged += delegate(object sender, ScrollChangedEventArgs args) {
+                if (args.OriginalSource==helpScroll) UpdateGuideIndex();
+            };
+            helpScroll.SizeChanged += delegate { UpdateGuideIndex(); };
+            Find<Grid>("GuidePanel").IsVisibleChanged += delegate {
+                _window.Dispatcher.BeginInvoke(new Action(UpdateGuideIndex), DispatcherPriority.Loaded);
+            };
             Find<Button>("TutSpace").Click += delegate { ScrollTo("TutSpaceArticle"); };
             Find<Button>("TutFaq").Click += delegate { ScrollTo("TutFaqArticle"); };
+            Find<Button>("OpenSoundFolder").Click += delegate { SendAction("open_sound_folder", null, Find<Button>("OpenSoundFolder")); };
             Find<Button>("PreviewScreenshot").Click += delegate { SendAction("preview_sound", SoundArgs("capture"), Find<Button>("PreviewScreenshot")); };
             Find<Button>("PreviewComplete").Click += delegate { SendAction("preview_sound", SoundArgs("success"), Find<Button>("PreviewComplete")); };
             Find<Button>("PreviewFailure").Click += delegate { SendAction("preview_sound", SoundArgs("failure"), Find<Button>("PreviewFailure")); };
+            Find<Button>("PreviewRejected").Click += delegate { SendAction("preview_sound", SoundArgs("rejected"), Find<Button>("PreviewRejected")); };
             Find<Button>("ResetShortcuts").Click += delegate { ResetShortcuts(); };
             Find<Button>("UninstallApp").Click += delegate {
                 if (_preview) { ShowToast("界面演示不会启动实际卸载。"); return; }
@@ -514,14 +558,23 @@ namespace NativeWpf
             foreach (TextBox box in shortcuts)
             {
                 TextBox captured = box;
-                captured.PreviewMouseLeftButtonDown += delegate { BeginShortcut(captured); };
+                captured.PreviewMouseLeftButtonDown += delegate
+                {
+                    if (!_manualShortcut || _capturingShortcut != captured.Name) BeginShortcut(captured);
+                };
+                var manual = new MenuItem { Header = "手动输入快捷键" };
+                manual.Click += delegate
+                {
+                    _window.Dispatcher.BeginInvoke(new Action(() => BeginManualShortcut(captured)), DispatcherPriority.Input);
+                };
+                captured.ContextMenu = new ContextMenu();
+                captured.ContextMenu.Items.Add(manual);
                 captured.PreviewKeyDown += CaptureShortcut;
                 captured.LostKeyboardFocus += delegate
                 {
                     if (_capturingShortcut==captured.Name)
                     {
-                        _capturingShortcut=null;
-                        Find<TextBlock>("ShortcutCaptureStatus").Text="已取消录入。";
+                        CancelShortcut(captured);
                     }
                 };
             }
@@ -778,14 +831,32 @@ namespace NativeWpf
                 button.IsHitTestVisible = false;
                 button.Opacity = 0.55;
             }
-            Send(message);
-            return true;
+            bool product = name == "export_batch_json" || name == "convert_batches";
+            if (product)
+            {
+                _productRequest = requestId;
+                SetProductStatus(name == "export_batch_json" ? "导出中…" : "转换中…", true);
+            }
+            if (Send(message)) return true;
+            _pendingNames.Remove(requestId);
+            if (button != null)
+            {
+                _pending.Remove(requestId);
+                button.ClearValue(UIElement.OpacityProperty);
+                button.IsHitTestVisible = true;
+            }
+            if (product) FinishProductAction("请求未发送，请重试。");
+            ShowToast("请求未发送，请重试。");
+            return false;
         }
 
         int _actionSequence;
 
         [DllImport("user32.dll")]
         static extern bool AllowSetForegroundWindow(uint processId);
+
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int key);
 
         void AllowOwnerForeground()
         {
@@ -808,12 +879,12 @@ namespace NativeWpf
             }));
         }
 
-        void Send(Dictionary<string, object> message)
+        bool Send(Dictionary<string, object> message)
         {
             if (_preview)
             {
                 if (_demo!=null) _demo.Handle(message);
-                return;
+                return true;
             }
             try
             {
@@ -830,10 +901,12 @@ namespace NativeWpf
                     Console.Out.WriteLine(line);
                     Console.Out.Flush();
                 }
+                return true;
             }
             catch (Exception error)
             {
                 try { Console.Error.WriteLine("native stdout: " + error.Message); } catch { }
+                return false;
             }
         }
 
@@ -888,6 +961,11 @@ namespace NativeWpf
                     {
                         Find<TextBlock>("ShortcutCaptureStatus").Text = B(message,"ok") ? "快捷键已保存。" : S(message,"error");
                         _runtimeSignature = "";
+                    }
+                    if (requestId == _productRequest)
+                    {
+                        string result = actionName == "export_batch_json" ? "导出" : "转换";
+                        FinishProductAction(result + (B(message,"ok") ? "完毕" : "失败，请查看提示。"));
                     }
                     if (actionName == "documents" && B(message,"ok"))
                     {
@@ -1002,6 +1080,8 @@ namespace NativeWpf
                 if (settings.ContainsKey("overlay_opacity") && !Find<Slider>("OverlayOpacitySlider").IsMouseCaptureWithin)
                     _vm.Settings.OverlayOpacity = D(settings, "overlay_opacity", 72);
                 if (settings.ContainsKey("auto_cleanup")) _vm.Settings.AutoCleanup = B(settings, "auto_cleanup");
+                foreach(string key in new[]{"auto_images","auto_results","auto_diagnostics"})
+                    Find<CheckBox>(key).IsChecked = !settings.ContainsKey(key) || B(settings,key);
                 if (settings.ContainsKey("cleanup_mode")) _vm.Settings.CleanupMode = S(settings, "cleanup_mode") == "days" ? "days" : "batches";
                 if (settings.ContainsKey("keep_batches") && !IsFocused(Find<TextBox>("AutoKeepBatches")))
                     _vm.Settings.KeepBatches = I(settings, "keep_batches", 3);
@@ -1044,6 +1124,15 @@ namespace NativeWpf
             string signature = _json.Serialize(runtime);
             if (signature == _runtimeSignature) return;
             _runtimeSignature = signature;
+            int remaining = I(runtime, "single_remaining", 0);
+            TextBlock singles = Find<TextBlock>("ParallelSingleProgress");
+            singles.Text = remaining > 0 ? "单卡识别 · 剩余" + remaining + "份" : "";
+            singles.Visibility = remaining > 0 ? Visibility.Visible : Visibility.Collapsed;
+            var soundSources = AsDict(runtime, "sound_sources");
+            ApplySoundSource("CaptureCueSource", soundSources, "capture", "低通快门");
+            ApplySoundSource("SuccessCueSource", soundSources, "success", "四音完成提示");
+            ApplySoundSource("FailureCueSource", soundSources, "failure", "四音失败提示");
+            ApplySoundSource("RejectedCueSource", soundSources, "rejected", "低沉双短音");
             string state = S(runtime, "state");
             bool waiting = B(runtime, "waiting");
             bool busy = B(runtime, "busy");
@@ -1158,6 +1247,9 @@ namespace NativeWpf
             _vm.Runtime.TaskSummary = StarSummary();
 
             Dictionary<string, object> capture = AsDict(runtime, "capture");
+            _vm.Runtime.ResolutionWarning = capture == null ? "" : S(capture,"resolution_warning");
+            _vm.Runtime.ShortcutWarning = S(runtime,"shortcut_warning");
+            ApplyShortcutFailures(AsDict(runtime, "shortcut_failures"));
             string captureName = capture != null ? S(capture, "name") : "";
             string captureMeta = capture != null ? S(capture, "meta") : "";
             string captureText = capture != null ? S(capture, "text") : "";
@@ -1189,6 +1281,19 @@ namespace NativeWpf
             if (_vm.Settings.ShortcutStop.Length > 0) count++;
             if (_vm.Settings.ShortcutOverlay.Length > 0) count++;
             return count;
+        }
+
+        void ApplyShortcutFailures(Dictionary<string, object> failures)
+        {
+            string[] actions = {"Full", "Single", "Puzzle", "Abort", "Stop", "Overlay"};
+            string[] keys = {"hotkey", "single_hotkey", "montage_hotkey", "cancel_hotkey", "quit_hotkey", "overlay_hotkey"};
+            for (int index = 0; index < keys.Length; index++)
+            {
+                var label = Find<TextBlock>("Shortcut" + actions[index] + "Failure");
+                string failure = failures == null ? "" : S(failures, keys[index]);
+                label.Visibility = failure.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+                label.ToolTip = failure.Length == 0 ? null : failure;
+            }
         }
 
         void ApplyShortcuts(Dictionary<string, object> shortcuts)
@@ -1334,7 +1439,15 @@ namespace NativeWpf
                 if (!reclaimable && protectedReason.Length == 0) protectedReason = "资料暂不可清理";
                 BatchItem batch = new BatchItem();
                 batch.Name = name;
-                batch.Title = S(d, "task").Length > 0 ? S(d, "task") : (S(d, "kind") == "diagnostics" ? "诊断摘要" : "扫描批次");
+                batch.Convertible = B(d,"convertible");
+                batch.OpenFolder = B(d,"open_folder");
+                batch.OpenRecord = B(d,"open_record");
+                string kind = S(d, "kind");
+                string task = S(d, "task");
+                if (kind == "session") batch.Title = "程序会话";
+                else if (task.Length > 0) batch.Title = task;
+                else if (recordOnly || kind == "diagnostics") batch.Title = "诊断记录";
+                else batch.Title = "扫描批次";
                 batch.Stars = S(d, "stars");
                 batch.StatusText = S(d,"status_text");
                 batch.Meta = BatchMeta(d, name);
@@ -1343,7 +1456,7 @@ namespace NativeWpf
                 batch.SizeText = FormatBytes(batch.Bytes);
                 batch.Reason = protectedReason;
                 batch.Protected = isProtected || !reclaimable;
-                batch.CanSelect = !batch.Protected;
+                batch.CanSelect = _filter == 3 ? batch.Convertible : !batch.Protected;
                 batch.StateText = batch.Protected ? "受保护" : "可清理";
                 if(recordOnly)batch.Meta+=" · 仅任务日志，无截图";
                 batch.NormalBackground = normal;
@@ -1366,6 +1479,7 @@ namespace NativeWpf
         {
             BatchItem batch = item as BatchItem;
             if (batch == null) return false;
+            if (_filter == 3) return batch.Convertible;
             if (_filter == 1) return batch.CanSelect;
             if (_filter == 2) return batch.Protected;
             return true;
@@ -1373,7 +1487,14 @@ namespace NativeWpf
 
         void SetFilter(int filter)
         {
+            bool changedMode = (_filter == 3) != (filter == 3);
             _filter = filter;
+            if (changedMode)
+                foreach (BatchItem batch in _vm.Batches)
+                {
+                    batch.IsSelected = false;
+                    batch.CanSelect = _filter == 3 ? batch.Convertible : !batch.Protected;
+                }
             _batchView.Refresh();
             UpdateFilterCounts();
             UpdateSelection();
@@ -1392,6 +1513,9 @@ namespace NativeWpf
             SetFilterLook(Find<Button>("FilterAll"), _filter == 0);
             SetFilterLook(Find<Button>("FilterCleanable"), _filter == 1);
             SetFilterLook(Find<Button>("FilterProtected"), _filter == 2);
+            SetFilterLook(Find<Button>("FilterConvert"), _filter == 3);
+            Find<Button>("PreviewCleanup").Visibility = _filter == 3 ? Visibility.Collapsed : Visibility.Visible;
+            Find<StackPanel>("ProductActions").Visibility = _filter == 3 ? Visibility.Visible : Visibility.Collapsed;
         }
 
         void SetFilterLook(Button button, bool active)
@@ -1408,7 +1532,7 @@ namespace NativeWpf
             int cleanableCount = 0;
             foreach (BatchItem batch in _vm.Batches)
             {
-                if (batch.Protected) continue;
+                if (!batch.CanSelect) continue;
                 cleanableCount++;
                 if (batch.IsSelected) { count++; bytes += batch.Bytes; }
                 else allCleanable = false;
@@ -1416,16 +1540,91 @@ namespace NativeWpf
             if (count == 0)
             {
                 _vm.SelectionSummary = "尚未选择批次";
-                _vm.SelectionHint = "仅可勾选未受保护的批次";
+                _vm.SelectionHint = _filter == 3 ? "仅显示有识别结果 JSON 的批次" : "仅可勾选未受保护的批次";
                 _vm.SelectionCanClean = false;
             }
             else
             {
                 _vm.SelectionSummary = "已选 " + count + " 个批次 · " + FormatBytes(bytes);
-                _vm.SelectionHint = "清理前会展示具体范围与容量";
+                _vm.SelectionHint = _filter == 3 ? "选择保存位置后，按批次导出" : "清理前会展示具体范围与容量";
                 _vm.SelectionCanClean = true;
             }
-            Find<Button>("SelectAllCleanable").Content = cleanableCount > 0 && allCleanable ? "取消全选" : "全选可清理";
+            Find<Button>("SelectAllCleanable").Content = cleanableCount > 0 && allCleanable ? "取消全选" : (_filter == 3 ? "全选" : "全选可清理");
+        }
+
+        void OpenBatch(object sender, RoutedEventArgs args)
+        {
+            // A data template can retarget Source to its containing row.
+            Button button = args.OriginalSource as Button;
+            BatchItem batch = button == null ? null : button.DataContext as BatchItem;
+            string action = button == null ? null : button.Tag as string;
+            if (batch == null || (action != "folder" && action != "record")) return;
+            SendAction("open_batch",new Dictionary<string,object>{{"name",batch.Name},{"record",action == "record"}},null);
+        }
+
+        string _productRequest;
+
+        void SetProductStatus(string text, bool busy)
+        {
+            TextBlock status = Find<TextBlock>("ProductStatus");
+            status.Text = text;
+            status.Visibility = String.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+            Find<WrapPanel>("ProductButtons").IsEnabled = !busy;
+        }
+
+        void FinishProductAction(string text)
+        {
+            _productRequest = null;
+            SetProductStatus(text, false);
+        }
+
+        void SaveSelected(bool asJson)
+        {
+            if (_filter != 3 || _productRequest != null || !CanOpenFileAction()) return;
+            List<string> names = new List<string>();
+            foreach(BatchItem batch in _vm.Batches) if(batch.Convertible && batch.IsSelected) names.Add(batch.Name);
+            if (names.Count==0) return;
+            string destination;
+            if (names.Count==1)
+            {
+                string extension = asJson ? ".json" : ".xlsx";
+                var picker = new Microsoft.Win32.SaveFileDialog {
+                    Title = asJson ? "保存产物 JSON" : "保存批次 Excel",
+                    Filter = asJson ? "JSON 文件 (*.json)|*.json" : "Excel 工作簿 (*.xlsx)|*.xlsx",
+                    DefaultExt = extension, AddExtension = true,
+                    FileName = System.IO.Path.GetFileName(names[0])+extension, OverwritePrompt = false
+                };
+                if (picker.ShowDialog(_window)!=true) return;
+                destination=picker.FileName;
+            }
+            else
+            {
+                try
+                {
+                    destination = FolderPicker.Show(
+                        new System.Windows.Interop.WindowInteropHelper(_window).Handle,
+                        asJson ? "选择保存产物 JSON 的文件夹" : "选择保存工作簿的文件夹");
+                }
+                catch (COMException error)
+                {
+                    ShowToast("无法打开目录选择窗口：" + error.Message);
+                    return;
+                }
+                if (destination == null) return;
+            }
+            if (CanOpenFileAction())
+                SendAction(asJson ? "export_batch_json" : "convert_batches",new Dictionary<string,object>{{"names",names},{"destination",destination}},Find<Button>(asJson ? "ExportBatchJson" : "ConvertSelected"));
+
+        }
+
+        static string IssueSummary(string message)
+        {
+            const string marker = "Traceback (most recent call last):";
+            string normalized = message.Replace("\r\n","\n").Replace('\r','\n');
+            int offset = normalized.IndexOf("\n" + marker,StringComparison.Ordinal);
+            if(offset < 0 && !normalized.StartsWith(marker,StringComparison.Ordinal)) return message;
+            string summary = offset < 0 ? "" : normalized.Substring(0,offset).TrimEnd();
+            return summary.Length > 0 ? summary : "程序异常，请查看导出日志";
         }
 
         void ToggleAllCleanable()
@@ -1451,7 +1650,7 @@ namespace NativeWpf
                 issue.Id = S(d, "id");
                 issue.Task = S(d, "task");
                 issue.OccurredAt = S(d, "occurred_at");
-                issue.Message = S(d, "message");
+                issue.Message = IssueSummary(S(d, "message"));
                 issue.BatchName = S(d, "batch_name");
                 issue.Display = issue.OccurredAt + " · " + issue.Task + " · " + issue.Message;
                 _vm.Issues.Add(issue);
@@ -1641,8 +1840,8 @@ namespace NativeWpf
             _vm.AutoHint = days
                 ? "按时间保留最近 " + _vm.Settings.KeepDays + " 天内的可清理批次；更早批次视为候选。"
                 : "按数量保留最近 " + _vm.Settings.KeepBatches + " 个可清理批次；更早批次视为候选。";
-            Find<StackPanel>("AutoBatchesOption").Visibility = enabled && !days ? Visibility.Visible : Visibility.Collapsed;
-            Find<StackPanel>("AutoDaysOption").Visibility = enabled && days ? Visibility.Visible : Visibility.Collapsed;
+            Find<StackPanel>("AutoBatchesOption").Visibility = !days ? Visibility.Visible : Visibility.Collapsed;
+            Find<StackPanel>("AutoDaysOption").Visibility = days ? Visibility.Visible : Visibility.Collapsed;
             SetSegmentLook(Find<Button>("AutoBatches"), !days);
             SetSegmentLook(Find<Button>("AutoDays"), days);
         }
@@ -1701,6 +1900,18 @@ namespace NativeWpf
             SetSubTab(Find<Button>("TabAbout"), tab == "about");
         }
 
+        void UpdateGuideIndex()
+        {
+            Grid guide=Find<Grid>("GuidePanel");
+            var transform=(TranslateTransform)Find<StackPanel>("GuideIndex").RenderTransform;
+            if (!guide.IsVisible) { transform.Y=0; return; }
+            var scroll=Find<ScrollViewer>("PageHelp");
+            var viewport=scroll.Template.FindName("PART_ScrollContentPresenter",scroll) as FrameworkElement;
+            if (viewport==null || !viewport.IsVisible) return;
+            double top=guide.TranslatePoint(new Point(0,0), viewport).Y;
+            transform.Y=Math.Max(0,4-top);
+        }
+
         void SetSubTab(Button button, bool active)
         {
             button.Background = active ? MakeBrush("#E4F1EB") : Brushes.Transparent;
@@ -1735,25 +1946,117 @@ namespace NativeWpf
         void BeginShortcut(TextBox box)
         {
             if (!CanEditShortcuts()) return;
+            if (!box.Focus()) return;
             _capturingShortcut=box.Name;
-            box.Focus();
+            for(int key=8; key<_shortcutKeysDown.Length; key++)
+                _shortcutKeysDown[key]=KeyIsDown(key);
+            _lastPolledModifiers=ModifierKeys.None;
+            _shortcutPollUntil=DateTime.UtcNow.AddSeconds(30);
+            _shortcutPoll.Start();
             Find<TextBlock>("ShortcutCaptureStatus").Text="请按下按键或组合键，Esc取消。";
+        }
+
+        void BeginManualShortcut(TextBox box)
+        {
+            if (!CanEditShortcuts()) return;
+            box.Focus();
+            _shortcutPoll.Stop();
+            _capturingShortcut = box.Name;
+            _manualShortcut = true;
+            box.IsReadOnly = false;
+            box.SelectAll();
+            Find<TextBlock>("ShortcutCaptureStatus").Text = "输入快捷键，如 Ctrl+Alt+S。Enter 保存，Esc 取消。";
+        }
+
+        void EndShortcut(TextBox box)
+        {
+            _shortcutPoll.Stop();
+            _capturingShortcut = null;
+            if (!_manualShortcut) return;
+            _manualShortcut = false;
+            box.ClearValue(TextBox.IsReadOnlyProperty);
+            box.GetBindingExpression(TextBox.TextProperty).UpdateTarget();
+        }
+
+        void CancelShortcut(TextBox box)
+        {
+            EndShortcut(box);
+            Find<TextBlock>("ShortcutCaptureStatus").Text="已取消录入。";
+        }
+
+        static bool KeyIsDown(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
+
+        void PollShortcut()
+        {
+            if (_capturingShortcut == null || _manualShortcut) { _shortcutPoll.Stop(); return; }
+            TextBox box = Find<TextBox>(_capturingShortcut);
+            if (!_window.IsActive || !box.IsKeyboardFocused || DateTime.UtcNow >= _shortcutPollUntil)
+            {
+                CancelShortcut(box);
+                return;
+            }
+            // A global hotkey can consume the WPF key event. Read only while
+            // this foreground field is armed; the regular key event still wins.
+            ModifierKeys modifiers = ModifierKeys.None;
+            if (KeyIsDown(0x11)) modifiers |= ModifierKeys.Control;
+            if (KeyIsDown(0x12)) modifiers |= ModifierKeys.Alt;
+            if (KeyIsDown(0x10)) modifiers |= ModifierKeys.Shift;
+            if (KeyIsDown(0x5B) || KeyIsDown(0x5C)) modifiers |= ModifierKeys.Windows;
+            CapturePolledShortcut(box, KeyIsDown, modifiers);
+        }
+
+        void CapturePolledShortcut(TextBox box, Func<int,bool> isDown, ModifierKeys modifiers)
+        {
+            bool modifiersChanged=modifiers!=_lastPolledModifiers;
+            _lastPolledModifiers=modifiers;
+            for(int key=8; key<_shortcutKeysDown.Length; key++)
+            {
+                if (!IsShortcutKey(key) || key==0x1B) continue;
+                bool down=isDown(key);
+                bool pressed=down && !_shortcutKeysDown[key];
+                _shortcutKeysDown[key]=down;
+                if (pressed && !modifiersChanged && modifiers!=ModifierKeys.None)
+                {
+                    SaveShortcut(box, ShortcutSpec(key,modifiers));
+                    return;
+                }
+            }
+        }
+
+        static bool IsShortcutKey(int vk)
+        {
+            // VK_PROCESSKEY and VK_PACKET report input processing, not keys.
+            return vk!=0 && vk!=0xE5 && vk!=0xE7 && vk!=16 && vk!=17 && vk!=18 && vk!=91 && vk!=92 && (vk<160 || vk>165);
+        }
+
+        static Key ShortcutEventKey(Key key, Key systemKey, Key imeKey)
+        {
+            return key==Key.System ? systemKey : key==Key.ImeProcessed ? imeKey : key;
         }
 
         void CaptureShortcut(object sender,KeyEventArgs e)
         {
             if (_capturingShortcut == null) return;
+            TextBox box = (TextBox)sender;
+            Key key=ShortcutEventKey(e.Key,e.SystemKey,e.ImeProcessedKey);
+            if (_manualShortcut && key != Key.Escape && key != Key.Enter) return;
             e.Handled=true;
-            Key key=e.Key==Key.System ? e.SystemKey : e.Key;
             if (key==Key.Escape)
             {
-                _capturingShortcut=null;
-                Find<TextBlock>("ShortcutCaptureStatus").Text="已取消录入。";
+                CancelShortcut(box);
+                return;
+            }
+            if (_manualShortcut)
+            {
+                SaveShortcut(box, box.Text);
                 return;
             }
             int vk=KeyInterop.VirtualKeyFromKey(key);
-            if (vk==0 || vk==16 || vk==17 || vk==18 || vk==91 || vk==92 || (vk>=160 && vk<=165)) return;
-            ModifierKeys modifiers=Keyboard.Modifiers;
+            if (!e.IsRepeat && IsShortcutKey(vk)) SaveShortcut(box, ShortcutSpec(vk,Keyboard.Modifiers));
+        }
+
+        static string ShortcutSpec(int vk, ModifierKeys modifiers)
+        {
             string specification="";
             if ((modifiers & ModifierKeys.Control)!=0) specification+="ctrl+";
             if ((modifiers & ModifierKeys.Alt)!=0) specification+="alt+";
@@ -1762,10 +2065,15 @@ namespace NativeWpf
             if ((vk>=48 && vk<=57) || (vk>=65 && vk<=90)) specification+=((char)vk).ToString().ToLowerInvariant();
             else if (vk>=112 && vk<=135) specification+="f"+(vk-111).ToString();
             else specification+="vk"+vk.ToString("x2");
+            return specification;
+        }
+
+        void SaveShortcut(TextBox box, string specification)
+        {
             string[] boxes={"ShortcutFullBox","ShortcutSingleBox","ShortcutPuzzleBox","ShortcutAbortBox","ShortcutStopBox","ShortcutOverlayBox"};
             string[] names={"hotkey","single_hotkey","montage_hotkey","cancel_hotkey","quit_hotkey","overlay_hotkey"};
-            int index=Array.IndexOf(boxes,_capturingShortcut);
-            _capturingShortcut=null;
+            int index=Array.IndexOf(boxes,box.Name);
+            EndShortcut(box);
             Dictionary<string,object> values=new Dictionary<string,object>();
             values[names[index]]=specification;
             SubmitShortcuts(values);
@@ -1942,6 +2250,7 @@ namespace NativeWpf
             _vm.Runtime.CheckEnabled = connected;
             if (!connected)
             {
+                if (_productRequest != null) FinishProductAction("连接中断，无法确认结果。");
                 _vm.Runtime.PrimaryEnabled = false;
                 _vm.Runtime.StopEnabled = false;
                 _vm.Runtime.AbortEnabled = false;
@@ -1984,6 +2293,12 @@ namespace NativeWpf
         {
             if (source == null || !source.ContainsKey(key)) return null;
             return source[key] as Dictionary<string, object>;
+        }
+
+        void ApplySoundSource(string element, Dictionary<string, object> sources, string kind, string fallback)
+        {
+            string name = S(sources, kind);
+            Find<TextBlock>(element).Text = name.Length == 0 ? fallback : name;
         }
 
         static Dictionary<string, object> AsDict(object value)
@@ -2078,7 +2393,7 @@ namespace NativeWpf
             long modified = L(batch, "modified_ns");
             if (modified > 0)
             {
-                try { parts.Add(new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(modified / 100).ToLocalTime().ToString("yyyy-MM-dd HH:mm")); }
+                try { parts.Add(new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(modified / 100).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")); }
                 catch { }
             }
             int files = I(batch, "files", 0);

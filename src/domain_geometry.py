@@ -6,6 +6,11 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+
+class RewardScaleUnavailable(RuntimeError):
+    """The capture has insufficient reward bars to establish scale."""
+
+
 @dataclass
 class Geometry:
     width:int
@@ -37,7 +42,7 @@ def calibrate(rgb):
         same=[p for p in candidates if abs((p[1]+p[3]/2)-(q[1]+q[3]/2))<=4 and abs(p[2]-q[2])<=4]
         groups.append(same)
     group=max(groups,key=len) if groups else []
-    if len(group)<2:raise RuntimeError('未测到至少两条同宽、同高度的奖励计数条，不能标定页面缩放')
+    if len(group)<2:raise RewardScaleUnavailable('未测到至少两条同宽、同高度的奖励计数条，不能标定页面缩放')
     measured=float(np.median([p[2] for p in group]));factor=1 if abs(measured-123)<=4 else measured/123
     scale=initial*factor
     center=float(np.median([p[1]+p[3]/2 for p in group]))/factor

@@ -94,16 +94,28 @@ def version_formats(item):
 
 
 class FileSink:
-    def __init__(self,path):
+    def __init__(self,path,first_sheet='获得物'):
         self.path=Path(path)
         if self.path.suffix.lower()!='.xlsx':raise ValueError('目标必须为 .xlsx 文件')
         self.path.parent.mkdir(parents=True,exist_ok=True)
         self.saved_signature=self.signature()
         self.book=load_workbook(self.path) if self.path.exists() else Workbook()
         self.check_unchanged()
-        if not self.path.exists():self.book.active.title='获得物'
+        if not self.path.exists():self.book.active.title=first_sheet
     def ensure(self,name):
         return self.book[name] if name in self.book.sheetnames else self.book.create_sheet(name)
+    def arrange_scan_sheets(self, sheets):
+        for index,sheet in enumerate(sheets):
+            offset=index-self.book.sheetnames.index(sheet.title)
+            if offset:self.book.move_sheet(sheet,offset=offset)
+        first=sheets[0]
+        first.sheet_state='visible'
+        for sheet in self.book.worksheets:
+            sheet.sheet_view.tabSelected=sheet is first
+        for view in self.book.views:
+            view.firstSheet=0
+            view.activeTab=0
+        self.book.active=first
     def last(self,sheet):
         # 从后往前找有内容的行，忽略仅格式化的尾行；不填补中间空洞。
         for r in range(sheet.max_row,0,-1):
@@ -195,7 +207,7 @@ def com_retry(method):
     return call
 
 class ComSink:
-    def __init__(self,path):
+    def __init__(self,path,first_sheet='获得物'):
         import win32com.client as client
         self.path=Path(path).resolve()
         if self.path.suffix.lower()!='.xlsx':raise ValueError('目标必须为 .xlsx 文件')
@@ -224,16 +236,18 @@ class ComSink:
                 try:
                     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,progid):registered.append(progid)
                 except FileNotFoundError:pass
+            if not registered:
+                raise RuntimeError('未找到可用的 Excel/WPS 桌面自动化接口。')
             errors=[]
             for progid in registered:
                 try:
                     self.excel=client.DispatchEx(progid);break
                 except Exception as error:errors.append(str(error))
-            else:raise RuntimeError('未能连接已注册的Excel/WPS桌面自动化接口：'+'；'.join(errors))
+            else:raise RuntimeError('已找到 Excel/WPS，但无法启动：'+'；'.join(errors))
             if self.path.exists():self.book=self.excel.Workbooks.Open(str(self.path))
             else:
-                self.book=self.excel.Workbooks.Add()
-                self.book.Worksheets(1).Name='获得物'
+                self.book=self.excel.Workbooks.Add(-4167)  # xlWBATWorksheet
+                self.book.Worksheets(1).Name=first_sheet
                 self.book.SaveAs(str(self.path),FileFormat=51)
         self.excel=self.book.Application
         if self.book.ReadOnly:raise PermissionError('指定工作簿为只读或已被另一 Excel/WPS 实例锁定')
@@ -253,6 +267,15 @@ class ComSink:
         for sheet in self.book.Worksheets:
             if sheet.Name==name:return sheet
         sheet=self.book.Worksheets.Add(After=self.book.Worksheets(self.book.Worksheets.Count));sheet.Name=name;return sheet
+    @com_retry
+    def arrange_scan_sheets(self,sheets):
+        for index,sheet in enumerate(sheets,1):
+            current=self.book.Sheets(index)
+            if current.Name!=sheet.Name:
+                sheet.Move(Before=current)
+        first=sheets[0]
+        if first.Visible!=-1:first.Visible=-1  # xlSheetVisible
+        first.Select(True)
     @com_retry
     def last(self,sheet):
         # Full-row formatting may extend UsedRange to 16,384 columns. Find
@@ -360,7 +383,9 @@ class ComSink:
 
 class JournalBook:
     def __init__(self,sink,sheet='获得物'):
-        self.sink=sink;self.sheet=sink.ensure(sheet);self.state=sink.ensure('扫描状态');self.tiers=sink.ensure('档位版本')
+        if sheet.casefold() in ('档位版本','扫描状态'):
+            raise ValueError('请为完整结果使用不同于“档位版本”和“扫描状态”的工作表名')
+        self.sink=sink;self.sheet=sink.ensure(sheet);self.tiers=sink.ensure('档位版本');self.state=sink.ensure('扫描状态')
         if sink.last(self.state)==0:sink.write(self.state,1,STATE_HEADERS)
         elif [sink.read(self.state,1,c) for c in range(1,7)]!=STATE_HEADERS:
             old=sink.read(self.state,1,1)
@@ -369,6 +394,7 @@ class JournalBook:
                 sink.rename(self.state,name);self.state=sink.ensure('扫描状态');sink.write(self.state,1,STATE_HEADERS)
             else:raise ValueError('原工作簿的“扫描状态”工作表不是本工具格式，请选择其他工作簿')
         self.count=max([int(sink.read(self.state,r,1) or 0) for r in range(2,sink.last(self.state)+1)]+[0])
+        sink.arrange_scan_sheets((self.sheet,self.tiers,self.state))
         self.active=None;sink.save()
     def single(self,session,success,items=None,save=True,started_at_ns=None,ended_at_ns=None):
         if self.active:raise ValueError('单卡会话与未完成整趟重叠')
@@ -522,7 +548,7 @@ class JournalBook:
 
 
 def write_xlsx(items,path,status='完整扫描已通过校验',sheet='获得物',montage=None):
-    book=JournalBook(FileSink(path),sheet);book.begin(datetime.now().astimezone().isoformat())
+    book=JournalBook(FileSink(path,first_sheet=sheet),sheet);book.begin(datetime.now().astimezone().isoformat())
     if montage:book.active['montage']=(montage,True)
     book.end('失败' not in status,items)
 
@@ -558,11 +584,11 @@ def watch(events,output,live=False,sheet='获得物',persistent=False):
         if not owner_handle:raise RuntimeError('无法监测扫描器主进程；未打开工作簿')
     sink=None
     if live:
-        try:sink=ComSink(output)
+        try:sink=ComSink(output,first_sheet=sheet)
         except Exception:
             # 桌面连接失败不能静默切换文件写入，避免错误覆盖用户文件。
             raise
-    if sink is None:sink=FileSink(output)
+    if sink is None:sink=FileSink(output,first_sheet=sheet)
     book=JournalBook(sink,sheet);offset=0;dirty_since=None
     Path(str(events)+'.ready').write_text(json.dumps({'scan':book.count,'path':str(sink.path),'mode':'桌面Excel/WPS' if isinstance(sink,ComSink) else 'XLSX文件（不要打开锁定）'},ensure_ascii=False),encoding='utf-8')
     while True:

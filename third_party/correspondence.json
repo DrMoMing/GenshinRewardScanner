@@ -1,7 +1,6 @@
 {
-  "runtime_sha256": "5e856d0e072e8667c62e824e47d61af4dce1cc4b2eb3c2446687f8cd63fe076f",
-  "source_archive": "rc77-input-source.zip",
-  "original_bytes": true,
+  "runtime_sha256": "86258c34ca6ec81279afa0d4e8e6a16084e490e96892366c05c4b87d766ae4a6",
+  "source_archive": "preview14-wgc-source.zip",
   "files": {
     "LICENSES/MaaCommonAssets-MIT.txt": "2f8ab70ffd1bd53863a27835be02757a657de693e2a2aef9111dbbfa2c5737f0",
     "LICENSES/MaaFramework-LGPLv3.md": "446e755fae55ff034bbb21be44670b5f116c2b2667947e7036f2bfe6632539a8",
@@ -9,7 +8,8 @@
     "LICENSES/PaddleOCR-Apache-2.0.txt": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e",
     "LICENSES/Python-LICENSE.txt": "62bec384df47b0328307db41455ff6ea2559e5546b394ac69148561b21703120",
     "native/rc77-input-source.zip": "9078d9d3b13540dc08cf85a7f6c5d8ba2a15507bc0d26b58f815ac08dc79d653",
-    "native/build.json": "26c62403014835774ee5568096a1d37ded184c43103182318fd2d9305d4ca222",
-    "native/MaaWin32ControlUnit.dll": "5e856d0e072e8667c62e824e47d61af4dce1cc4b2eb3c2446687f8cd63fe076f"
+    "native/build.json": "8cb895f8d5467c9cb7a33b2db21a802f655295977dbb56d2233b9e23c879cfce",
+    "native/MaaWin32ControlUnit.dll": "86258c34ca6ec81279afa0d4e8e6a16084e490e96892366c05c4b87d766ae4a6",
+    "native/preview14-wgc-source.zip": "598d3f08fff1535aea125982ff5b8689daf314b3221bdbe0aafb503f961c9f89"
   }
 }

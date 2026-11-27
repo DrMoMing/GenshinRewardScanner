@@ -4,7 +4,8 @@
 """Native grayscale name rectangles; idle writer, bounded active/rollback sets.
 
 Every key includes field role, quality and exact native dimensions. Numbers
-never enter the name bank. The cut is geometry metadata, not part of a label."""
+never enter the name bank. The cut is geometry metadata, not part of a label.
+"""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -24,7 +25,7 @@ HISTORY=24
 def gray(raw,box):
     x,y,w,h=map(int,box)
     crop=raw[max(0,y):y+h,max(0,x):x+w,:3]
-    if crop.size==0:raise ValueError('empty field rectangle')
+    if crop.size==0:raise ValueError('字段的裁剪区域为空。')
     return cv2.cvtColor(crop,cv2.COLOR_RGB2GRAY)
 
 
@@ -97,7 +98,8 @@ class Bank:
 
         Up to three active rectangles, three inactive rollback candidates and
         24 recent distinct examples per label. Exact duplicates update recency.
-        Changes are transactional, so interruption keeps the previous revision."""
+        Changes are transactional, so interruption keeps the previous revision.
+        """
         image=np.ascontiguousarray(image,dtype=np.uint8)
         if min(image.shape)<7 or image.std()<5:return False
         digest=hashlib.sha256(image.tobytes()+str(image.shape).encode()).hexdigest()

@@ -29,6 +29,11 @@ NUMBER=re.compile(r'\+?([0-9]+(?:\.[0-9]+)?%?)(.*)')
 PROMOTE=24  # Historical counter milestone; no longer gates normal matching.
 
 
+def learned_zero(bank,crop,star,shape):
+    hit=bank.match(group('level_zero',star,shape),crop)
+    return ('+0',hit['score']) if hit and hit['label']=='+0' and hit['score']>=.99 else None
+
+
 def split_boundary(raw,box,tokens):
     """CTC estimates a window; only a real blank column can be a boundary."""
     plus=next((i for i,q in enumerate(tokens) if q['text']=='+'),None)
@@ -131,9 +136,13 @@ class Reader:
         for i,field in enumerate(fields):
             role=field['role'];kind='sub_name' if role.startswith('副词条') else self.name_kinds.get(role);hit=hits.get(i)
             if role=='等级':
-                zero=self.zero_level.match(gray(raw,boxes[i]),raw.shape)
+                crop=gray(raw,boxes[i])
+                zero=self.zero_level.match(crop,raw.shape)
                 if zero is not None:
                     values[i]=zero;routes[role]='template_zero';continue
+                zero=learned_zero(self.bank,crop,star,raw.shape)
+                if zero is not None:
+                    values[i]=zero;routes[role]='template_zero_learned';continue
             if kind is None:
                 plans.append((i,'whole',boxes[i]));routes[role]='ocr';continue
             if hit is None or not hit['trusted']:
@@ -186,6 +195,8 @@ class Reader:
                 text=hit['label']+'+'+parsed[1]+('（待激活）' if chinese else '')
                 values[i]=(text,min(confidence,hit['score']));continue
             values[i]=(text,confidence)
+            if role=='等级' and confidence>=.99 and re.fullmatch(r'\+(?:[0-9]|1[0-9]|20)',text):
+                learning.append(dict(role=role,key=group('level_zero',star,raw.shape),label=text,cut=None))
             kind='sub_name' if role.startswith('副词条') else self.name_kinds.get(role)
             if kind is None:continue
             parsed=STAT.fullmatch(text) if kind=='sub_name' else None
@@ -247,6 +258,11 @@ class Reader:
                      for f in r['fields'] if f['role'] in ('标题','套装名')))]
         if len(records)!=expected_reads:
             emit('card_unconfirmed',work_id=work_id,engine='hybrid-v3',reason='validated_reads_incomplete');return
+        expected_level=detail.get('等级')
+        records=[dict(record,learning_fields=[item for item in record.get('learning_fields',[])
+                     if item['role']!='等级' or (item['label']==expected_level and all(
+                         any(field['role']=='等级' and field['text']==expected_level for field in other['fields']) for other in records))])
+                 for record in records]
         # Count each field at most once per card, even in a two-frame scan.
         audits={}
         for r in records:

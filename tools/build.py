@@ -116,10 +116,10 @@ def main():
     shutil.copy2(ROOT/'使用说明.txt', dist/'使用说明.txt')
     if args.iscc:
         subprocess.run([str(args.iscc), '/Qp', '/DPayload='+str(dist), '/DReleaseOutput='+str(dist),
-            '/DStarterData='+str(support/'starter_data'), str(ROOT/'packaging/installer.iss')], check=True)
+            '/DStarterData='+str(support/'starter_data'), '/DReleaseVersion='+config['version'], str(ROOT/'packaging/installer.iss')], check=True)
         sys.path.insert(0, str(ROOT/'packaging'))
         from installer_manifest import require_admin
-        require_admin(dist/'DomainScanner_Setup_0.3.0-preview.9.exe')
+        require_admin(dist/('DomainScanner_Setup_'+config['version']+'.exe'))
     print(str(dist))
 
 

@@ -9,13 +9,15 @@ import re
 import subprocess
 import threading
 import time
+from log_view import error_summary
+from user_controls import format_shortcut
 
 
 TASK_NAMES = {'scan': '整趟扫描', 'montage': '拼图', 'single': '单卡识别'}
 
 
 def plain(value, limit=500):
-    return str(value).replace('\x00', '').replace('\r', ' ').replace('\n', ' ')[:limit]
+    return error_summary(str(value)).replace('\x00', '').replace('\r', ' ').replace('\n', ' ')[:limit]
 
 
 class StatusModel:
@@ -41,15 +43,15 @@ class StatusModel:
             self.values.update(requested=str(config.get('single_workers', 2)),
                 stars=' '.join(str(s) for s in (5, 4, 3, 2) if s in config.get('scan_stars', [])) or '无',
                 row_info='开' if config.get('row_info') else '关',
-                scan_key=plain(config.get('hotkey', ''), 70),
-                single_key=plain(config.get('single_hotkey', ''), 70),
-                montage_key=plain(config.get('montage_hotkey', ''), 70),
-                stop_key=plain(config.get('quit_hotkey', ''), 70))
-            self.values['cancel_key']=plain(config.get('cancel_hotkey','ctrl+alt+x'),70)
+                scan_key=plain(format_shortcut(config.get('hotkey','')),70),
+                single_key=plain(format_shortcut(config.get('single_hotkey','')),70),
+                montage_key=plain(format_shortcut(config.get('montage_hotkey','')),70),
+                stop_key=plain(format_shortcut(config.get('quit_hotkey','')),70))
+            self.values['cancel_key']=plain(format_shortcut(config.get('cancel_hotkey','ctrl+alt+x')),70)
             if actual is not None:
                 self.values['actual'] = str(actual) if actual else '—'
             if unlock is not None:
-                self.values.update(unlock_modifiers=unlock[0],unlock_key=unlock[1])
+                self.values.update(unlock_modifiers=unlock[0]&15,unlock_key=unlock[1])
 
     def start(self, kind, single_id=None):
         with self.lock:
@@ -69,7 +71,7 @@ class StatusModel:
 
     def reject(self, kind, reason):
         with self.lock:
-            self.values['notice'] = TASK_NAMES.get(kind, kind) + '指令未成功接收 · ' + plain(reason, 200)
+            self.values['notice'] = TASK_NAMES.get(kind, kind) + '指令未接收 · ' + plain(reason, 200)
 
     def phase(self, text, ident=None):
         with self.lock:
@@ -103,7 +105,7 @@ class StatusModel:
         message = plain(message)
         with self.lock:
             if message.startswith('一路页面模型已预备'):
-                self.values.update(scanner='未启动', loading='', loaded='', actual='1')
+                self.values.update(scanner='未启动', loading='', loaded='')
                 return
             if message.startswith('后台预备未完成'):
                 self.values.update(scanner='未启动', loading='', loaded='', notice=message)
@@ -139,6 +141,18 @@ class StatusModel:
         with self.lock:
             self.values['notice'] = plain(message, 350)
 
+    def resolution_warning(self,message):
+        with self.lock:self.values['resolution_warning']=plain(message)
+
+    def shortcut_warning(self,warning):
+        with self.lock:self.values['shortcut_warning']=plain(warning)
+
+    def recognizer_count(self,count):
+        with self.lock:self.values['actual']=str(count) if count else '—'
+
+    def pool_loading(self,active):
+        with self.lock:self.values['pool_loading']=int(active)
+
     def snapshot(self):
         with self.lock:
             result = dict(self.values)
@@ -156,6 +170,8 @@ class StatusModel:
                 for index, item in enumerate(history):
                     result['history' + str(index)] = '第%d次任务已启动 → 已结束 · %s · %s' % (item['number'], item['name'], item['state'])
             result['pending'] = sum(not item['ended'] for item in self.tasks.values())
+            if self.foreground is not None and self.singles:
+                result['single_progress']='单卡识别 · 剩余%d份'%len(self.singles)
             return result
 
 
@@ -255,7 +271,8 @@ class OverlayBridge:
             return {'locked':values.get('locked','0')=='1',
                     'opacity':max(20,min(95,int(values.get('opacity','72')))),
                     'visual_sequence':int(values.get('control_sequence','0') or '0'),
-                    'sequence':int(values.get('control_lock_sequence','0') or '0')}
+                    'sequence':int(values.get('control_lock_sequence','0') or '0'),
+                    'shortcut_report':values.get('shortcut_report','')}
         except (OSError,UnicodeError,ValueError):
             return {}
 

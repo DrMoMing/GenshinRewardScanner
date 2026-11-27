@@ -635,29 +635,40 @@ def run(service,H,memory_preview=False,test_driver=None):
     keys.set(key_summary(settings)+'（尚未启动监听）')
     root.protocol('WM_DELETE_WINDOW',close);root.after(50,drain)
     target_polling=[False];capture_warming=[False];capture_health_due=[0.0]
+    page_health_running=[False]
     def capture_prepared(future):
         try:future.result()
         except Exception as error:events.put(('capture_target','当前捕获窗口：截图连接尚未就绪；'+str(error)))
         finally:capture_warming[0]=False
+    def probe_page_capture():
+        try:service.check_page_capture_health()
+        except Exception as error:events.put(('log','[截图恢复] 页面截图自检失败：'+str(error)))
+        finally:page_health_running[0]=False
     def poll_target(refresh=False):
         if closed[0] or memory_preview or not hasattr(service,'capture_target_info'):return
         if not target_polling[0]:
             target_polling[0]=True
             def lookup():
                 try:
+                    from capture_health import single_probe_reason
                     connect=(refresh or waiting[0]) and not busy[0] and not single_queue.pending
                     # Read-only window identity here. Marshal connection/refresh
                     # onto the camera executor, including lazy game startup.
                     info=service.capture_target_info(connect=False)
                     events.put(('capture_target',info['text']))
-                    health=(connect and info.get('connected') and time.monotonic()>=capture_health_due[0]
-                            and hasattr(service,'check_capture_health'))
-                    if connect and info.get('available') and (refresh or not info.get('connected') or health) and not capture_warming[0]:
+                    foreground=connect and info.get('foreground')
+                    if foreground and not page_health_running[0] and hasattr(service,'check_page_capture_health'):
+                        page_health_running[0]=True
+                        threading.Thread(target=probe_page_capture,daemon=True,name='page-capture-health').start()
+                    health=(foreground and info.get('connected') and time.monotonic()>=capture_health_due[0]
+                            and hasattr(service,'check_capture_health') and single_probe_reason(info.get('capture_health',{})))
+                    if foreground and info.get('available') and (refresh or not info.get('connected') or health) and not capture_warming[0]:
                         capture_warming[0]=True
                         capture_health_due[0]=time.monotonic()+5.0
-                        future=(single_queue.camera.submit(service.check_capture_health) if health and not refresh
-                                else single_queue.camera.submit(service.prepare_capture,refresh=refresh))
-                        future.add_done_callback(capture_prepared)
+                        future=(single_queue.try_camera(service.check_capture_health,recovering=True) if health and not refresh
+                                else single_queue.try_camera(service.prepare_capture,refresh=refresh,recovering=not refresh))
+                        if future is None:capture_warming[0]=False
+                        else:future.add_done_callback(capture_prepared)
                 except Exception as error:
                     service.capture_target_state={'available':False}
                     events.put(('capture_target','当前捕获窗口：未连接；'+str(error)))

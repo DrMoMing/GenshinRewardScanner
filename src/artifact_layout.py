@@ -16,7 +16,7 @@ class LayoutRejected(RuntimeError):
 @lru_cache(maxsize=4)
 def load_templates(root):
     data=json.loads((Path(root)/'Assets/原神/副本结算页/详情布局/文字候选.json').read_text(encoding='utf-8'))
-    if data['version']!=1 or data['logical_width']!=410:raise LayoutRejected('unsupported layout candidate data')
+    if data['version']!=1 or data['logical_width']!=410:raise LayoutRejected('不支持此详情布局配置')
     return {int(n):{'texts':rows} for n,rows in data['layouts'].items()}
 
 def runs(active):
@@ -56,19 +56,19 @@ def green_heading_band(image,geometry):
 
 def locate_layout(frame,root):
  templates=load_templates(str(root))
- if getattr(frame,'native_rgb',None) is None:raise LayoutRejected('native provenance unavailable')
+ if getattr(frame,'native_rgb',None) is None:raise LayoutRejected('缺少原始截图坐标')
  g=detail_frame(frame)
- if not g:raise LayoutRejected('no pixel detail geometry')
+ if not g:raise LayoutRejected('未定位到详情框')
  raw=getattr(frame,'native_rgb',frame);H,W=raw.shape[:2]
  native=lambda box:frame.native_box(box) if hasattr(frame,'native_box') else tuple(map(int,box))
  rx,ry,rw,rh=native(g['roi']);lx,ly,lw,lh=native(g['level']);scale=rw/410.;origin=(rx,ly-265*scale)
  band=green_heading_band(frame,g)
- if not band:raise LayoutRejected('no green heading')
+ if not band:raise LayoutRejected('未找到绿色的套装标题')
  green_y=band['native'][1]+band['native'][3]/2;choices=[]
  for n,t in templates.items():
   b=next(q['textBox'] for q in t['texts'] if q['role']=='套装名');choices.append((abs(origin[1]+(b['y']+b['height']/2)*scale-green_y),n))
  choices.sort();residual,n=choices[0]
- if residual/scale>12.8 or (choices[1][0]-residual)/scale<6:raise LayoutRejected('ambiguous set position')
+ if residual/scale>12.8 or (choices[1][0]-residual)/scale<6:raise LayoutRejected('套装标题位置不明确')
  mapped=[]
  for q in templates[n]['texts']:
   role=q['role']
@@ -93,10 +93,10 @@ def locate_layout(frame,root):
    if active[k-1] and active[k+1]:active[k]=True
   bands=[(a,b) for a,b in runs(active) if b-a>=3]
   target=y+h/2-y0
-  if not bands:raise LayoutRejected('missing native ink: '+role)
+  if not bands:raise LayoutRejected('未找到字段文字：'+role)
   a,b=min(bands,key=lambda q:abs((q[0]+q[1])/2-target))
-  if role=='标题' and sum(y-y0<=(a+b)/2<=y+h-y0 and b-a>=h*.25 for a,b in bands)!=1:raise LayoutRejected('multiline or ambiguous title')
-  if a<=0 or b>=mask.shape[0]:raise LayoutRejected('ink touches candidate boundary: '+role)
+  if role=='标题' and sum(y-y0<=(a+b)/2<=y+h-y0 and b-a>=h*.25 for a,b in bands)!=1:raise LayoutRejected('标题有多行或位置不明确')
+  if a<=0 or b>=mask.shape[0]:raise LayoutRejected('字段文字触及裁剪边缘：'+role)
   strip=mask[a:b].astype(np.uint8)
   # A tiny isolated first component followed by full-height text is a bullet.
   if role.startswith('副词条'):
@@ -106,7 +106,7 @@ def locate_layout(frame,root):
     idx,cx,cy,cw,ch,area=components[0]
     if ch<(b-a)*.55 and cw<(b-a)*.55:strip[labels==idx]=0
   yy,xx=np.where(strip)
-  if not len(xx):raise LayoutRejected('empty native ink: '+role)
+  if not len(xx):raise LayoutRejected('字段裁剪中没有文字：'+role)
   left=int(xx.min());right=int(xx.max())+1;pad=max(1,round((b-a)*.22));box=(max(0,x0+left-pad),max(0,y0+a-pad),right-left+2*pad,b-a+2*pad)
   boxes.append(box);evidence.append({'role':role,'native_box':list(box),'fallback':False})
  # Independent body-line coverage prevents silently dropping an extra substat.
@@ -121,9 +121,9 @@ def locate_layout(frame,root):
    if active[j-1] and active[j+1]:active[j]=True
   observed=[(by+a,by+b) for a,b in runs(active) if b-a>=max(2,round(5*scale))]
  subboxes=[box for field,box in zip(evidence,boxes) if field['role'].startswith('副词条')]
- if len(observed)!=n:raise LayoutRejected('body pixel line count differs from candidate')
+ if len(observed)!=n:raise LayoutRejected('详情文字行数与布局不符')
  for (a,b),box in zip(observed,subboxes):
-  if not box[1]-2*scale<=(a+b)/2<=box[1]+box[3]+2*scale:raise LayoutRejected('uncovered body line')
+  if not box[1]-2*scale<=(a+b)/2<=box[1]+box[3]+2*scale:raise LayoutRejected('有详情文字行未被布局覆盖')
  return boxes,evidence,g,n,residual,scale
 
 def read_layout(e,frame,root):
@@ -135,10 +135,10 @@ def read_layout(e,frame,root):
  else:values=e.recognize(raw,boxes,pad=0)
  for field,(text,score) in zip(evidence,values):
   minimum=.85 if field['role']=='套装名' else .90
-  if not text or score<minimum:raise LayoutRejected('uncertain text: '+field['role'])
+  if not text or score<minimum:raise LayoutRejected('字段文字未识别或置信度不足：'+field['role'])
  from detail_selection import known_set_names
  suite=next(text.strip().rstrip(':：') for field,(text,score) in zip(evidence,values) if field['role']=='套装名')
- if suite not in known_set_names(root):raise LayoutRejected('unknown set heading')
+ if suite not in known_set_names(root):raise LayoutRejected('未识别到已知套装标题')
  items=[]
  for q,box,(text,score) in zip(evidence,boxes,values):
   view=frame.view_box(box,g['roi']) if hasattr(frame,'view_box') else box

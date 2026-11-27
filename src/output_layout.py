@@ -77,6 +77,15 @@ def reapply_domain_output(domain,folder):
         setattr(domain,name,value)
 
 
+def archive_task_result(folder):
+    """Publish the worker's result using its batch name, without making a copy."""
+    folder=Path(folder)
+    source=folder/'export.json'
+    target=folder/(folder.name+'.json')
+    if source.is_file() and source!=target:source.rename(target)
+    return target
+
+
 def current_log_folder():
     return getattr(_log_context,'folder',None) or os.environ.get('DOMAIN_TASK_FOLDER')
 

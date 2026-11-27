@@ -6,11 +6,64 @@ import ctypes
 import json
 from pathlib import Path
 
+SHORTCUT_WARNING = '有快捷键被占用，注册失败，请到设置里查看'
+
 DEFAULT = {'hotkey': 'ctrl+alt+s', 'single_hotkey':'ctrl+alt+d','montage_hotkey':'ctrl+alt+p','cancel_hotkey':'ctrl+alt+x','row_info':False, 'quit_hotkey': 'ctrl+alt+q', 'overlay_hotkey':'ctrl+alt+o', 'sound': True, 'live_excel': True, 'xlsx_target': '', 'xlsx_sheet': '获得物','scan_stars':[2,3,4,5]}
 KEYS = {'space': 0x20, 'enter': 0x0D, 'tab': 0x09, 'escape': 0x1B,
         'backspace': 0x08, 'insert': 0x2D, 'delete': 0x2E, 'home': 0x24,
         'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'left': 0x25,
         'up': 0x26, 'right': 0x27, 'down': 0x28}
+KEY_LABELS = {
+    0x08:'Backspace', 0x09:'Tab', 0x0D:'Enter', 0x13:'Pause',
+    0x14:'Caps Lock', 0x1B:'Esc', 0x20:'空格', 0x21:'Page Up',
+    0x22:'Page Down', 0x23:'End', 0x24:'Home', 0x25:'左方向键',
+    0x26:'上方向键', 0x27:'右方向键', 0x28:'下方向键', 0x2C:'Print Screen',
+    0x2D:'Insert', 0x2E:'Delete', 0x5D:'菜单键', 0x6A:'小键盘乘号',
+    0x6B:'小键盘加号', 0x6C:'小键盘分隔键', 0x6D:'小键盘减号',
+    0x6E:'小键盘小数点', 0x6F:'小键盘除号', 0x90:'Num Lock', 0x91:'Scroll Lock',
+    0xAD:'静音', 0xAE:'音量减', 0xAF:'音量加', 0xB0:'下一曲', 0xB1:'上一曲',
+    0xB2:'停止播放', 0xB3:'播放/暂停',
+    **{0x60+digit:f'小键盘 {digit}' for digit in range(10)},
+}
+DISPLAY_TO_KEY = {label.casefold():f'vk{key:02x}' for key,label in KEY_LABELS.items()}
+
+
+def probe_shortcut_registration(hotkeys, specification):
+    modifiers,key=hotkeys.parse_hotkey(specification)
+    if not hotkeys.u.RegisterHotKey(None,0xBB,modifiers|0x4000,key):
+        return hotkeys.k32.GetLastError()
+    hotkeys.u.UnregisterHotKey(None,0xBB)
+    return None
+
+
+def normalize_shortcut(specification):
+    parts=[part.strip().lower() for part in specification.split('+')]
+    parts[-1]=DISPLAY_TO_KEY.get(parts[-1],parts[-1])
+    return '+'.join(parts)
+
+
+def format_shortcut(specification):
+    if not specification:return ''
+    parts=specification.split('+')
+    key=parts[-1].lower()
+    if key in KEYS:
+        parts[-1]=KEY_LABELS[KEYS[key]]
+    elif len(key)==4 and key.startswith('vk') and all(c in '0123456789abcdef' for c in key[2:]):
+        vk=int(key[2:],16)
+        if vk in KEY_LABELS:
+            parts[-1]=KEY_LABELS[vk]
+        else:
+            parts[-1]='未识别按键'
+            if vk not in (0xE5,0xE7) and hasattr(ctypes,'windll'):
+                user=ctypes.windll.user32
+                scan=user.MapVirtualKeyW(vk,4)
+                code=((scan&255)<<16) | (1<<24 if scan&0xff00 else 0)
+                name=ctypes.create_unicode_buffer(64)
+                if scan and user.GetKeyNameTextW(code,name,len(name)):
+                    parts[-1]=name.value
+    else:
+        parts[-1]=key.upper()
+    return '+'.join([part.capitalize() for part in parts[:-1]]+[parts[-1]])
 
 
 def read_settings(path):
